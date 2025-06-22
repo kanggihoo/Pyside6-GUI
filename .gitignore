@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+.cursorignore
+test_data/
+test_data_many_images/
+test_data_no_color/
+
+tmp.py
