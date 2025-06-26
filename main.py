@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStatusBar,
 )
-from PySide6.QtGui import QAction, QKeyEvent, QShortcut, QKeySequence
+from PySide6.QtGui import QAction, QKeyEvent
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import QTreeWidgetItem
 
@@ -16,6 +16,7 @@ from widgets.project_tree import ProjectTreeWidget
 from widgets.workspace_panel import WorkspacePanel
 from widgets.representative_panel import RepresentativePanel
 from widgets.image_label import ImageLabel
+from widgets.keyboard_navigation import KeyboardNavigationHandler
 
 class MainWindow(QMainWindow):
     """애플리케이션의 메인 윈도우 클래스."""
@@ -51,7 +52,9 @@ class MainWindow(QMainWindow):
         '''
         self._setup_ui()
         self._connect_signals() # UI 위젯들의 시그널(이벤트)을 슬롯(이벤트 핸들러)에 연결하는 내부 메서드
-        self._setup_global_shortcuts() # 전역 키보드 단축키 설정
+        
+        # 키보드 네비게이션 핸들러 초기화
+        self.keyboard_handler = KeyboardNavigationHandler(self)
 
     # ===================================================================
     # 1. UI 초기 설정 메서드
@@ -187,17 +190,11 @@ class MainWindow(QMainWindow):
         self.all_products = []
         
         try:
-            print(f"제품 스캔 시작: {project_root}")
-            
             # 프로젝트 루트의 모든 하위 폴더를 재귀적으로 확인
             self._scan_products_recursive(project_root, max_depth=5)
             
-            print(f"전체 {len(self.all_products)}개 제품을 발견했습니다.")
-            for product in self.all_products:
-                print(f"  - {os.path.basename(product)}: {product}")
-            
         except Exception as e:
-            print(f"제품 스캔 중 오류 발생: {e}")
+            pass  # 조용히 실패
     
     def _scan_products_recursive(self, current_path, max_depth=3, current_depth=0):
         """재귀적으로 제품 폴더를 스캔합니다."""
@@ -206,7 +203,6 @@ class MainWindow(QMainWindow):
             
         try:
             items = os.listdir(current_path)
-            print(f"스캔 중: {current_path} (깊이: {current_depth})")
             
             for item in items:
                 item_path = os.path.join(current_path, item)
@@ -214,40 +210,31 @@ class MainWindow(QMainWindow):
                 if not os.path.isdir(item_path):
                     continue
                 
-                print(f"  폴더 확인: {item}")
-                
                 # 제품 폴더인지 확인
                 if self._is_product_folder(item_path):
-                    print(f"    → 제품 폴더로 인식: {item}")
                     if item_path not in self.all_products:
                         self.all_products.append(item_path)
                 else:
-                    print(f"    → 제품 폴더 아님, 하위 폴더 스캔 계속")
                     # 제품 폴더가 아니라면 하위 폴더를 계속 스캔
                     self._scan_products_recursive(item_path, max_depth, current_depth + 1)
                     
         except Exception as e:
-            print(f"폴더 스캔 중 오류 ({current_path}): {e}")
+            pass  # 조용히 실패
     
     def _is_product_folder(self, folder_path):
         """폴더가 제품 폴더인지 판단합니다."""
         try:
             folder_name = os.path.basename(folder_path)
-            print(f"    제품 폴더 판단 중: {folder_name}")
             
             sub_items = os.listdir(folder_path)
             sub_dirs = [d for d in sub_items if os.path.isdir(os.path.join(folder_path, d))]
             sub_files = [f for f in sub_items if os.path.isfile(os.path.join(folder_path, f))]
-            
-            print(f"      하위 폴더들: {sub_dirs}")
-            print(f"      하위 파일들: {sub_files[:5]}{'...' if len(sub_files) > 5 else ''}")  # 처음 5개만 표시
             
             # Case 1: 직접 model/product_only 폴더가 있는 경우
             has_model = 'model' in sub_dirs
             has_product_only = 'product_only' in sub_dirs
             
             if has_model or has_product_only:
-                print(f"      → Case 1: 직접 model/product_only 폴더 발견 (model: {has_model}, product_only: {has_product_only})")
                 return True
             
             # Case 2: 색상 폴더 하위에 model/product_only가 있는 경우
@@ -262,15 +249,12 @@ class MainWindow(QMainWindow):
                     has_sub_product_only = 'product_only' in sub_sub_dirs
                     
                     if has_sub_model or has_sub_product_only:
-                        print(f"      → Case 2: {sub_dir} 폴더 하위에 model/product_only 발견 (model: {has_sub_model}, product_only: {has_sub_product_only})")
                         color_folders_with_model += 1
                         
                 except OSError as e:
-                    print(f"      → {sub_dir} 폴더 읽기 오류: {e}")
                     continue
             
             if color_folders_with_model > 0:
-                print(f"      → Case 2 완료: {color_folders_with_model}개 색상 폴더에서 model/product_only 발견")
                 return True
             
             # Case 3: 숫자로 된 폴더명이면서 하위에 이미지 파일이나 관련 폴더가 있는 경우
@@ -293,14 +277,11 @@ class MainWindow(QMainWindow):
                         has_meaningful_dirs = False
                 
                 if has_images or has_meaningful_dirs:
-                    print(f"      → Case 3: 숫자 폴더명({folder_name})이면서 이미지 또는 하위 폴더 존재 (이미지: {has_images}, 폴더: {has_meaningful_dirs})")
                     return True
             
-            print(f"      → 제품 폴더 아님")
             return False
             
         except Exception as e:
-            print(f"      → 폴더 판단 중 오류: {e}")
             return False
     
     def _load_all_representative_selections(self):
@@ -313,10 +294,9 @@ class MainWindow(QMainWindow):
                         selections = json.load(f)
                         self.representative_selections[product_path] = selections
             except Exception as e:
-                print(f"제품 {product_path}의 선택 상태 로드 중 오류 발생: {e}")
+                pass  # 조용히 실패
         
         completed = sum(1 for p in self.all_products if self._is_product_completed(p))
-        print(f"전체 {len(self.all_products)}개 제품 중 {completed}개 제품의 대표 이미지가 선정되어 있습니다.")
 
     def _connect_signals(self):
         """UI 위젯들의 시그널을 해당 슬롯(이벤트 핸들러)에 연결합니다."""
@@ -332,85 +312,12 @@ class MainWindow(QMainWindow):
         # workspace_panel (WorkspacePanel)에서 대표 이미지 선택 시
         self.workspace_panel.image_selected_for_representative.connect(self._on_workspace_image_clicked)
     
-    def _setup_global_shortcuts(self):
-        """전체 애플리케이션에서 작동하는 키보드 단축키를 설정합니다."""
-        # Mac 환경을 고려한 키 조합 - J, K 키 사용 (vim 스타일)
-        self.shortcut_prev = QShortcut(QKeySequence(Qt.Key_J), self)
-        self.shortcut_prev.activated.connect(lambda: self._on_shortcut_activated("J/j (이전 제품)", -1))
-        
-        self.shortcut_next = QShortcut(QKeySequence(Qt.Key_K), self)
-        self.shortcut_next.activated.connect(lambda: self._on_shortcut_activated("K/k (다음 제품)", 1))
-        
-        # Cmd + J, K (Mac의 Cmd 키)
-        self.shortcut_cmd_prev = QShortcut(QKeySequence(Qt.META | Qt.Key_J), self)
-        self.shortcut_cmd_prev.activated.connect(lambda: self._on_shortcut_activated("Cmd+J (이전 제품)", -1))
-        
-        self.shortcut_cmd_next = QShortcut(QKeySequence(Qt.META | Qt.Key_K), self)
-        self.shortcut_cmd_next.activated.connect(lambda: self._on_shortcut_activated("Cmd+K (다음 제품)", 1))
-        
-        # Ctrl + J, K 키: 대안 단축키
-        self.shortcut_ctrl_prev = QShortcut(QKeySequence(Qt.CTRL | Qt.Key_J), self)
-        self.shortcut_ctrl_prev.activated.connect(lambda: self._on_shortcut_activated("Ctrl+J (이전 제품)", -1))
-        
-        self.shortcut_ctrl_next = QShortcut(QKeySequence(Qt.CTRL | Qt.Key_K), self)
-        self.shortcut_ctrl_next.activated.connect(lambda: self._on_shortcut_activated("Ctrl+K (다음 제품)", 1))
-        
-        # 좌/우 방향키: 추가 대안 단축키
-        self.shortcut_left = QShortcut(QKeySequence(Qt.Key_Left), self)
-        self.shortcut_left.activated.connect(lambda: self._on_shortcut_activated("← (이전 제품)", -1))
-        
-        self.shortcut_right = QShortcut(QKeySequence(Qt.Key_Right), self)
-        self.shortcut_right.activated.connect(lambda: self._on_shortcut_activated("→ (다음 제품)", 1))
-        
-        # Page Up/Down 키: 추가 제품 이동 단축키
-        self.shortcut_page_up = QShortcut(QKeySequence(Qt.Key_PageUp), self)
-        self.shortcut_page_up.activated.connect(lambda: self._on_shortcut_activated("PageUp (이전 제품)", -1))
-        
-        self.shortcut_page_down = QShortcut(QKeySequence(Qt.Key_PageDown), self)
-        self.shortcut_page_down.activated.connect(lambda: self._on_shortcut_activated("PageDown (다음 제품)", 1))
-        
-        # 모든 단축키를 애플리케이션 전체에서 작동하도록 설정 (최고 우선순위)
-        shortcuts = [
-            self.shortcut_prev, self.shortcut_next,
-            self.shortcut_cmd_prev, self.shortcut_cmd_next,
-            self.shortcut_ctrl_prev, self.shortcut_ctrl_next,
-            self.shortcut_left, self.shortcut_right,
-            self.shortcut_page_up, self.shortcut_page_down
-        ]
-        
-        for shortcut in shortcuts:
-            shortcut.setContext(Qt.ApplicationShortcut)  # 앱 전역에서 작동
-        
-        print("전역 키보드 단축키 설정 완료 (Mac 최적화):")
-        print("  - J/j K/k : 제품 이동 (기본, 한/영키 상태 무관, J/j=이전 K/k=다음)")
-        print("  - Cmd+J Cmd+K : 제품 이동 (Mac 스타일)")
-        print("  - Ctrl+J Ctrl+K : 제품 이동 (대안1)")
-        print("  - ← → : 제품 이동 (대안2)")
-        print("  - PageUp PageDown : 제품 이동 (대안3)")
-    
-    def _on_shortcut_activated(self, shortcut_name, direction):
-        """단축키 활성화 시 디버그 정보와 함께 제품 이동을 실행합니다."""
-        print(f"단축키 감지: {shortcut_name}")
-        self._navigate_to_product(direction)
-    
     def keyPressEvent(self, event: QKeyEvent):
-        """키보드 이벤트를 직접 처리하여 j, k 키를 포함한 모든 상태에서 동작하도록 합니다."""
-        key = event.key()
-        text = event.text().lower()  # 입력된 텍스트를 소문자로 변환
-        
-        # j 또는 k 키 처리 (한/영키 상태와 무관하게)
-        if text == 'j' or key == Qt.Key_J:
-            print(f"키 이벤트 감지: j/J (이전 제품), key={key}, text='{event.text()}'")
-            self._navigate_to_product(-1)
-            event.accept()
-            return
-        elif text == 'k' or key == Qt.Key_K:
-            print(f"키 이벤트 감지: k/K (다음 제품), key={key}, text='{event.text()}'")
-            self._navigate_to_product(1)
-            event.accept()
+        """키보드 이벤트를 키보드 핸들러에 위임합니다."""
+        if hasattr(self, 'keyboard_handler') and self.keyboard_handler.handle_key_press_event(event):
             return
         
-        # 다른 키는 기본 처리로 넘김
+        # 처리되지 않은 키는 기본 처리로 넘김
         super().keyPressEvent(event)
 
     # ===================================================================
@@ -432,22 +339,19 @@ class MainWindow(QMainWindow):
                 with open(selections_file, 'w', encoding='utf-8') as f:
                     json.dump(selections, f, indent=2, ensure_ascii=False)
             
-            print("대표 이미지 선택 상태가 저장되었습니다.")
             # 진행상황 업데이트
             self._update_status_bar()
         except Exception as e:
-            print(f"대표 이미지 선택 상태 저장 중 오류 발생: {e}")
+            pass  # 조용히 실패
     
     def _load_representative_selections(self):
         """저장된 대표 이미지 선택 상태를 불러옵니다."""
         try:
             if not self.current_product_path:
-                print("현재 선택된 제품이 없습니다.")
                 return
                 
             selections_file = self._get_selections_file_path(self.current_product_path)
             if not os.path.exists(selections_file):
-                print("저장된 대표 이미지 선택 상태가 없습니다.")
                 return
                 
             with open(selections_file, 'r', encoding='utf-8') as f:
@@ -456,11 +360,10 @@ class MainWindow(QMainWindow):
                 
             # UI에 선택 상태 반영
             self._apply_saved_selections()
-            print("대표 이미지 선택 상태가 불러와졌습니다.")
             # 진행상황 업데이트
             self._update_status_bar()
         except Exception as e:
-            print(f"대표 이미지 선택 상태 불러오기 중 오류 발생: {e}")
+            pass  # 조용히 실패
     
     def _apply_saved_selections(self):
         """불러온 선택 상태를 UI에 반영합니다."""
@@ -505,7 +408,7 @@ class MainWindow(QMainWindow):
                     self._find_and_select_image_label(group_widget, selected_path, group_name)
                         
         except Exception as e:
-            print(f"선택 상태 적용 중 오류 발생: {e}")
+            pass  # 조용히 실패
     
     def _find_and_select_image_label(self, widget, target_path, group_name):
         """위젯 트리를 순회하며 해당 경로의 이미지 라벨을 찾아 선택 상태로 만듭니다."""
@@ -528,6 +431,118 @@ class MainWindow(QMainWindow):
                 # 양쪽 패널에서 동기화 (무한 루프 방지를 위해 직접 호출)
                 self.workspace_panel.update_representative_selection(group_name, target_path)
                 break
+
+    def _save_current_product_selections(self):
+        """현재 제품의 대표 이미지 선택 상태만 저장합니다."""
+        if not self.current_product_path or self.current_product_path not in self.representative_selections:
+            return
+            
+        try:
+            selections_file = self._get_selections_file_path(self.current_product_path)
+            selections = self.representative_selections[self.current_product_path]
+            
+            with open(selections_file, 'w', encoding='utf-8') as f:
+                json.dump(selections, f, indent=2, ensure_ascii=False)
+            
+            # 진행상황 업데이트를 위해 상태바 갱신 (약간의 지연 후)
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(50, self._update_status_bar)
+                
+        except Exception as e:
+            pass  # 조용히 실패
+
+    # ===================================================================
+    # 4. UI 업데이트 로직
+    # ===================================================================
+
+    def _update_right_panel(self, current_tree_item, item_path):
+        """
+        트리 선택에 따라 우측 대표 이미지 패널을 업데이트하거나,
+        필요한 경우 탭을 동기화합니다.
+        """
+        product_path = self._find_product_root(current_tree_item, item_path)
+
+        if not product_path:
+            if self.current_product_path:
+                self.representative_panel.clear()
+                self.current_product_path = None
+            return
+
+        # 다른 제품을 선택한 경우, 대표 이미지 UI를 새로 구성
+        if product_path and product_path != self.current_product_path:
+            self.current_product_path = product_path
+            self.representative_panel.setup_ui(product_path)
+            
+            # 저장된 선택 상태 자동 로드
+            self._load_current_product_selections()
+        
+        # 현재 선택된 폴더에 맞춰 대표 이미지 탭을 동기화
+        if self.current_product_path:
+            self.representative_panel.sync_tab(item_path, self.current_product_path)
+        
+        # 상태바 업데이트
+        self._update_status_bar()
+    
+    def _load_current_product_selections(self):
+        """현재 제품의 저장된 대표 이미지 선택 상태를 자동으로 불러옵니다."""
+        if not self.current_product_path:
+            return
+            
+        try:
+            selections_file = self._get_selections_file_path(self.current_product_path)
+            if os.path.exists(selections_file):
+                with open(selections_file, 'r', encoding='utf-8') as f:
+                    selections = json.load(f)
+                    self.representative_selections[self.current_product_path] = selections
+                    
+                # UI에 선택 상태 반영 (약간의 지연 후 실행)
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(200, self._apply_saved_selections)
+                QTimer.singleShot(400, self._update_status_bar)  # 선택 상태 적용 후 상태바 업데이트
+                
+        except Exception as e:
+            pass  # 조용히 실패
+
+    def _find_product_root(self, tree_item, item_path):
+        """
+        선택된 트리 아이템의 최상위 아이템 경로를 제품 루트로 반환합니다.
+        """
+        product_item = tree_item
+        while product_item.parent():
+            product_item = product_item.parent()
+        
+        product_path = product_item.data(0, Qt.UserRole)
+        # 만약 찾은 경로에 model/product_only가 없다면, 현재 아이템 경로를 사용
+        try:
+            subdirs = [d for d in os.listdir(product_path) if os.path.isdir(os.path.join(product_path, d))]
+            if not any(d in ['model', 'product_only'] for d in subdirs):
+                 # 하위 폴더도 확인
+                 if not any( os.path.isdir(os.path.join(product_path, sd, 'model')) or os.path.isdir(os.path.join(product_path, sd, 'product_only')) for sd in subdirs):
+                     # 그래도 없으면 현재 아이템 경로가 루트일 수 있음
+                     current_subdirs = [d for d in os.listdir(item_path) if os.path.isdir(os.path.join(item_path, d))]
+                     if any(d in ['model', 'product_only'] for d in current_subdirs):
+                        return item_path
+
+        except (OSError, TypeError):
+            pass
+
+        return product_path
+
+    def _clear_all_panels(self):
+        """모든 동적 UI 요소들을 초기화합니다."""
+        self.product_tree_widget.clear()
+        self.representative_panel.clear()
+        self.workspace_panel.clear_content()
+        self.current_product_path = None
+        # 선택 상태도 초기화
+        self.selected_model_image = None
+        self.selected_product_only_image = None
+        self.representative_selections.clear()
+        # 전체 제품 목록도 초기화
+        self.all_products.clear()
+        self.project_root_path = None
+        # 상태바 업데이트
+        self._update_status_bar()
 
     # ===================================================================
     # 3. 이벤트 핸들러 (슬롯)
@@ -662,7 +677,7 @@ class MainWindow(QMainWindow):
                                     child.deselect()
                         
         except Exception as e:
-            print(f"우측 패널 선택 상태 동기화 중 오류 발생: {e}")
+            pass  # 조용히 실패
     
     def _update_representative_selection(self, group: str, image_path: str):
         """대표 이미지 선택 상태를 업데이트하고 자동 저장합니다."""
@@ -681,304 +696,6 @@ class MainWindow(QMainWindow):
         
         # 자동 저장
         self._save_current_product_selections()
-    
-    def _save_current_product_selections(self):
-        """현재 제품의 대표 이미지 선택 상태만 저장합니다."""
-        if not self.current_product_path or self.current_product_path not in self.representative_selections:
-            return
-            
-        try:
-            selections_file = self._get_selections_file_path(self.current_product_path)
-            selections = self.representative_selections[self.current_product_path]
-            
-            with open(selections_file, 'w', encoding='utf-8') as f:
-                json.dump(selections, f, indent=2, ensure_ascii=False)
-            
-            # 진행상황 업데이트를 위해 상태바 갱신 (약간의 지연 후)
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(50, self._update_status_bar)
-                
-        except Exception as e:
-            print(f"대표 이미지 선택 상태 저장 중 오류 발생: {e}")
-
-    # ===================================================================
-    # 4. UI 업데이트 로직
-    # ===================================================================
-
-    def _update_right_panel(self, current_tree_item, item_path):
-        """
-        트리 선택에 따라 우측 대표 이미지 패널을 업데이트하거나,
-        필요한 경우 탭을 동기화합니다.
-        """
-        product_path = self._find_product_root(current_tree_item, item_path)
-
-        if not product_path:
-            if self.current_product_path:
-                self.representative_panel.clear()
-                self.current_product_path = None
-            return
-
-        # 다른 제품을 선택한 경우, 대표 이미지 UI를 새로 구성
-        if product_path and product_path != self.current_product_path:
-            self.current_product_path = product_path
-            self.representative_panel.setup_ui(product_path)
-            
-            # 저장된 선택 상태 자동 로드
-            self._load_current_product_selections()
-        
-        # 현재 선택된 폴더에 맞춰 대표 이미지 탭을 동기화
-        if self.current_product_path:
-            self.representative_panel.sync_tab(item_path, self.current_product_path)
-        
-        # 상태바 업데이트
-        self._update_status_bar()
-    
-    def _load_current_product_selections(self):
-        """현재 제품의 저장된 대표 이미지 선택 상태를 자동으로 불러옵니다."""
-        if not self.current_product_path:
-            return
-            
-        try:
-            selections_file = self._get_selections_file_path(self.current_product_path)
-            if os.path.exists(selections_file):
-                with open(selections_file, 'r', encoding='utf-8') as f:
-                    selections = json.load(f)
-                    self.representative_selections[self.current_product_path] = selections
-                    
-                # UI에 선택 상태 반영 (약간의 지연 후 실행)
-                from PySide6.QtCore import QTimer
-                QTimer.singleShot(200, self._apply_saved_selections)
-                QTimer.singleShot(400, self._update_status_bar)  # 선택 상태 적용 후 상태바 업데이트
-                
-        except Exception as e:
-            print(f"저장된 선택 상태 불러오기 중 오류 발생: {e}")
-
-    def _find_product_root(self, tree_item, item_path):
-        """
-        선택된 트리 아이템의 최상위 아이템 경로를 제품 루트로 반환합니다.
-        """
-        product_item = tree_item
-        while product_item.parent():
-            product_item = product_item.parent()
-        
-        product_path = product_item.data(0, Qt.UserRole)
-        # 만약 찾은 경로에 model/product_only가 없다면, 현재 아이템 경로를 사용
-        try:
-            subdirs = [d for d in os.listdir(product_path) if os.path.isdir(os.path.join(product_path, d))]
-            if not any(d in ['model', 'product_only'] for d in subdirs):
-                 # 하위 폴더도 확인
-                 if not any( os.path.isdir(os.path.join(product_path, sd, 'model')) or os.path.isdir(os.path.join(product_path, sd, 'product_only')) for sd in subdirs):
-                     # 그래도 없으면 현재 아이템 경로가 루트일 수 있음
-                     current_subdirs = [d for d in os.listdir(item_path) if os.path.isdir(os.path.join(item_path, d))]
-                     if any(d in ['model', 'product_only'] for d in current_subdirs):
-                        return item_path
-
-        except (OSError, TypeError):
-            pass
-
-        return product_path
-
-    def _clear_all_panels(self):
-        """모든 동적 UI 요소들을 초기화합니다."""
-        self.product_tree_widget.clear()
-        self.representative_panel.clear()
-        self.workspace_panel.clear_content()
-        self.current_product_path = None
-        # 선택 상태도 초기화
-        self.selected_model_image = None
-        self.selected_product_only_image = None
-        self.representative_selections.clear()
-        # 전체 제품 목록도 초기화
-        self.all_products.clear()
-        self.project_root_path = None
-        # 상태바 업데이트
-        self._update_status_bar()
-
-    # ===================================================================
-    # 5. 키보드 단축키 처리
-    # ===================================================================
-    
-    def _navigate_to_product(self, direction: int):
-        """제품 간 이동 (direction: -1=이전, 1=다음)"""
-        try:
-            print(f"제품 이동 시작: direction={direction}")
-            
-            # 현재 선택된 아이템 가져오기
-            current_item = self.product_tree_widget.currentItem()
-            print(f"현재 선택된 아이템: {current_item.text(0) if current_item else 'None'}")
-            
-            if not current_item:
-                print("선택된 아이템이 없음 - 첫 번째 제품으로 이동 시도")
-                # 선택된 아이템이 없으면 첫 번째 제품으로 이동
-                first_product = self._get_first_product_item()
-                print(f"첫 번째 제품: {first_product.text(0) if first_product else 'None'}")
-                if first_product:
-                    self.product_tree_widget.setCurrentItem(first_product)
-                    print("첫 번째 제품으로 이동 완료")
-                else:
-                    print("첫 번째 제품을 찾을 수 없음")
-                return
-            
-            # 제품 레벨 아이템들을 모두 찾기
-            product_items = self._get_all_product_items()
-            print(f"찾은 제품 개수: {len(product_items)}")
-            for i, item in enumerate(product_items):
-                print(f"  제품 {i}: {item.text(0)}")
-                
-            if not product_items:
-                print("제품 목록이 비어있음")
-                return
-            
-            # 현재 제품 아이템 찾기 (현재 선택된 아이템이 제품이 아닐 수도 있으므로 상위로 올라가며 찾기)
-            current_product_item = self._find_parent_product_item(current_item)
-            print(f"현재 제품 아이템: {current_product_item.text(0) if current_product_item else 'None'}")
-            
-            if not current_product_item:
-                print("현재 제품 아이템을 찾을 수 없음")
-                return
-            
-            # 현재 제품의 인덱스 찾기
-            try:
-                current_index = product_items.index(current_product_item)
-                print(f"현재 제품 인덱스: {current_index}")
-            except ValueError:
-                print("현재 제품이 제품 목록에 없음")
-                return
-            
-            # 다음/이전 인덱스 계산 (순환하도록)
-            new_index = (current_index + direction) % len(product_items)
-            next_product_item = product_items[new_index]
-            print(f"이동할 제품 인덱스: {new_index}, 제품명: {next_product_item.text(0)}")
-            
-            # 새로운 제품으로 이동
-            print("제품 선택 시작...")
-            self.product_tree_widget.setCurrentItem(next_product_item)
-            self.product_tree_widget.expandItem(next_product_item)  # 펼치기
-            print("제품 선택 완료")
-            
-            # 이동한 제품명 표시
-            product_name = next_product_item.text(0)
-            direction_text = "다음" if direction == 1 else "이전"
-            print(f"키보드 탐색: {direction_text} 제품으로 이동 → {product_name}")
-            
-        except Exception as e:
-            print(f"제품 이동 중 오류 발생: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def _get_all_product_items(self):
-        """모든 제품 레벨 아이템들을 순서대로 반환합니다."""
-        product_items = []
-        
-        print("제품 아이템 검색 시작...")
-        
-        # 현재 선택된 아이템 가져오기
-        current_item = self.product_tree_widget.currentItem()
-        if not current_item:
-            print("현재 선택된 아이템이 없음")
-            return product_items
-        
-        # 현재 아이템이 제품 레벨인지 확인하고, 그 부모를 찾음
-        current_path = current_item.data(0, Qt.UserRole)
-        print(f"현재 아이템: {current_item.text(0)}, 경로: {current_path}")
-        
-        # 현재 아이템이 제품인지 확인
-        if current_path and self._is_actual_product_folder(current_path):
-            # 현재 아이템이 제품이면, 그 부모의 모든 자식들을 찾음
-            parent_item = current_item.parent()
-            print(f"부모 아이템: {parent_item.text(0) if parent_item else 'None (최상위)'}")
-            
-            if parent_item:
-                # 부모가 있는 경우 - 부모의 자식들을 모두 확인
-                container_item = parent_item
-            else:
-                # 부모가 없는 경우 - 최상위 레벨에서 형제들을 찾음
-                # 트리 위젯의 최상위 아이템들을 확인
-                print("최상위 레벨에서 형제 아이템들 검색...")
-                for i in range(self.product_tree_widget.topLevelItemCount()):
-                    top_item = self.product_tree_widget.topLevelItem(i)
-                    if top_item:
-                        item_path = top_item.data(0, Qt.UserRole)
-                        print(f"  최상위 아이템 {i}: {top_item.text(0)}, 경로: {item_path}")
-                        if item_path and self._is_actual_product_folder(item_path):
-                            product_items.append(top_item)
-                            print(f"    → 제품으로 추가됨")
-                print(f"총 {len(product_items)}개 제품 아이템 발견 (최상위 레벨)")
-                return product_items
-        else:
-            # 현재 아이템이 제품이 아닌 경우, 상위로 올라가며 제품 찾기
-            print("현재 아이템이 제품이 아님 - 상위에서 제품 레벨 찾기")
-            temp_item = current_item
-            while temp_item:
-                temp_path = temp_item.data(0, Qt.UserRole)
-                if temp_path and self._is_actual_product_folder(temp_path):
-                    print(f"제품 레벨 발견: {temp_item.text(0)}")
-                    # 이 제품의 부모를 찾아서 형제들을 검색
-                    parent_item = temp_item.parent()
-                    if parent_item:
-                        container_item = parent_item
-                        break
-                    else:
-                        # 최상위 레벨에서 검색
-                        for i in range(self.product_tree_widget.topLevelItemCount()):
-                            top_item = self.product_tree_widget.topLevelItem(i)
-                            if top_item:
-                                item_path = top_item.data(0, Qt.UserRole)
-                                if item_path and self._is_actual_product_folder(item_path):
-                                    product_items.append(top_item)
-                        print(f"총 {len(product_items)}개 제품 아이템 발견 (상위 검색 후 최상위)")
-                        return product_items
-                temp_item = temp_item.parent()
-            
-            if not temp_item:
-                print("제품 레벨을 찾을 수 없음")
-                return product_items
-            container_item = parent_item
-        
-        # container_item의 자식들 중에서 제품들을 찾기
-        print(f"컨테이너 아이템: {container_item.text(0)}")
-        print(f"컨테이너의 자식 개수: {container_item.childCount()}")
-        
-        for i in range(container_item.childCount()):
-            child_item = container_item.child(i)
-            if child_item:
-                child_name = child_item.text(0)
-                item_path = child_item.data(0, Qt.UserRole)
-                print(f"  자식 {i}: {child_name}, 경로: {item_path}")
-                
-                is_product = self._is_actual_product_folder(item_path) if item_path else False
-                print(f"    제품 폴더 여부: {is_product}")
-                
-                if item_path and is_product:
-                    product_items.append(child_item)
-                    print(f"    → 제품으로 추가됨")
-        
-        print(f"총 {len(product_items)}개 제품 아이템 발견")
-        return product_items
-    
-    def _is_actual_product_folder(self, folder_path):
-        """경로가 실제 제품 폴더인지 확인합니다 (스캔된 제품 목록과 비교)."""
-        return folder_path in self.all_products
-    
-    def _find_parent_product_item(self, item):
-        """주어진 아이템의 상위 제품 아이템을 찾습니다."""
-        current = item
-        
-        while current:
-            # 현재 아이템이 제품 아이템인지 확인
-            item_path = current.data(0, Qt.UserRole)
-            if item_path and self._is_actual_product_folder(item_path):
-                return current
-            
-            # 상위 아이템으로 이동
-            current = current.parent()
-        
-        return None
-    
-    def _get_first_product_item(self):
-        """첫 번째 제품 아이템을 반환합니다."""
-        product_items = self._get_all_product_items()
-        return product_items[0] if product_items else None
 
 
 if __name__ == "__main__":
