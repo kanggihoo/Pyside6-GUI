@@ -14,3 +14,4 @@ test_data_many_images/
 test_data_no_color/
 
 tmp.py
+.DS_Store
