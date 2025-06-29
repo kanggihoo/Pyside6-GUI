@@ -1,0 +1,11 @@
+{
+  "aws": {
+    "region": "ap-northeast-2"
+  },
+  "s3": {
+    "bucket_name": "sw-fashion-image-data"
+  },
+  "dynamodb": {
+    "table_name": "ProductAssets"
+  }
+} 
