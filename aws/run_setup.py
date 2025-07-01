@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
 AWS 인프라 구축 통합 실행 스크립트
-설정 확인 -> 인프라 구축을 순차적으로 실행합니다.
+config.json 파일로 부터 작성된 값을 읽어서 설정값을 확인 한 후(S3 버킷 , DynamoDB 테이블)
+-> 설정값을 확인 한 후 인프라 구축을 순차적으로 실행합니다. 
 """
+
+from setup_aws_infrastructure import AWSInfrastructureSetup
 
 import os
 import sys
@@ -15,7 +18,6 @@ current_dir = Path(__file__).parent
 sys.path.insert(0, str(current_dir))
 
 
-from setup_aws_infrastructure import AWSInfrastructureSetup
 
 def load_config(config_path: str = None) -> dict:
     """

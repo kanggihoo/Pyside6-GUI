@@ -343,7 +343,6 @@ class ImageViewerDialog(QDialog):
                 color: #ecf0f1;
                 border-radius: 4px;
                 border: 1px solid #2c3e50;
-                font-family: 'Courier New', monospace;
             }
         """)
         

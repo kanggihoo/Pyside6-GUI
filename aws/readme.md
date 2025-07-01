@@ -73,14 +73,14 @@ main_category/
 
 **테이블 정보**:
 - 테이블명: `ProductAssets` (예시)
-- 파티션 키 (PK): `sub_category_id` (String)
+- 파티션 키 (PK): `sub_category` (String)
 - 정렬 키 (SK): `product_id` (String)
 
 #### 속성(Attributes) 상세:
 
 | 속성 이름 | 데이터 타입 | 역할 및 설명 |
 |-----------|-------------|--------------|
-| `sub_category_id` | String | (PK) 상품의 서브 카테고리 ID |
+| `sub_category` | String | (PK) 상품의 서브 카테고리 ID |
 | `product_id` | String | (SK) 고유 상품 ID |
 | `product_info` | Map | meta.json의 기본 정보 (상품명, 브랜드, 가격 등) |
 | `available_colors` | String Set | 상품의 모든 색상 리스트 |
