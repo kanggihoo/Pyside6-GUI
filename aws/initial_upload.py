@@ -7,12 +7,10 @@
 import os
 import json
 import sys
-import time
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import logging
 from datetime import datetime
-import argparse
 
 # 현재 스크립트 경로 기준으로 aws_manager 모듈 임포트
 sys.path.insert(0, str(Path(__file__).parent))
@@ -150,26 +148,26 @@ class InitialUploader:
         logger.info(f"카테고리 통계: {category_stats}")
         return products
     
-    def load_meta_json(self, meta_file_path: Path) -> Optional[Dict[str, Any]]:
+    def validate_meta_file(self, meta_file_path: Path) -> bool:
         """
-        meta.json 파일을 로드합니다.
+        meta.json 파일의 유효성을 검사합니다.
         
         Args:
             meta_file_path: meta.json 파일 경로
             
         Returns:
-            Optional[Dict]: 메타 정보 (실패시 None)
+            bool: 파일이 유효한 JSON인지 여부
         """
         try:
             with open(meta_file_path, 'r', encoding='utf-8') as f:
-                meta_data = json.load(f)
-            return meta_data
+                json.load(f)  # JSON 유효성만 확인
+            return True
         except json.JSONDecodeError as e:
             logger.error(f"JSON 디코딩 실패 {meta_file_path}: {e}")
-            return None
+            return False
         except Exception as e:
-            logger.error(f"메타 파일 로드 실패 {meta_file_path}: {e}")
-            return None
+            logger.error(f"메타 파일 검증 실패 {meta_file_path}: {e}")
+            return False
     
     def get_files_to_upload(self, product_dir: Path) -> List[Dict[str, Any]]:
         """
@@ -203,10 +201,10 @@ class InitialUploader:
                 
                 
                 files_to_upload.append({
-                    'local_path': file_path,
-                    'relative_path': str(relative_path),
-                    'file_type': file_type,
-                    'size': file_path.stat().st_size
+                    'local_path': file_path, # 로컬 데이터 루트 경로 기준(절대 경로)
+                    'relative_path': str(relative_path), # 상대경로(text/파일명 , segment/파일명 , meta.json))
+                    'file_type': file_type, # 파일 타입
+                    'size': file_path.stat().st_size # 파일 크기
                 })
         
         return files_to_upload
@@ -261,64 +259,49 @@ class InitialUploader:
         
         return upload_stats
     
-    def create_dynamodb_item(self, main_category: str, sub_category: int, product_id: str) -> tuple[bool, bool]:
+    def create_dynamodb_item(self, main_category: str, sub_category: int, product_id: str, 
+                           image_file_lists: Dict[str, List[str]] = None) -> tuple[bool, bool]:
         """
-        DynamoDB에 제품 아이템을 생성합니다.
+        DynamoDB에 제품 아이템을 생성합니다. (파일 리스트 포함)
         
         Args:
             main_category: 메인 카테고리
             sub_category: 서브 카테고리 ID
             product_id: 제품 ID
+            image_file_lists: 폴더별 이미지 파일명 리스트
             
         Returns:
             tuple[bool, bool]: (처리 성공 여부, 새 제품 여부)
         """
         try:
-            # DynamoDB 아이템 생성 (새 제품이면 True, 기존 제품이면 False 반환)
-            is_new_product = self.aws_manager.create_product_item(
-                main_category, sub_category, product_id
+            # DynamoDB 아이템 생성 (파일 리스트 포함)
+            success, is_new_product = self.aws_manager.create_product_item(
+                main_category, sub_category, product_id, image_file_lists
             )
             
-            if is_new_product:
-                logger.info(f"DynamoDB 새 아이템 생성 성공: {main_category}-{sub_category}-{product_id}")
-            else:
-                logger.info(f"DynamoDB 기존 아이템 업데이트 성공: {main_category}-{sub_category}-{product_id}")
+            if success:
+                if is_new_product:
+                    logger.info(f"DynamoDB 새 아이템 생성 성공: {main_category}-{sub_category}-{product_id}")
+                else:
+                    logger.info(f"DynamoDB 기존 아이템 업데이트 성공: {main_category}-{sub_category}-{product_id}")
+                
+                total_images = sum(len(files) for files in image_file_lists.values())
+                non_empty_folders = [folder for folder, files in image_file_lists.items() if files]
+                empty_folders = [folder for folder, files in image_file_lists.items() if not files]
+                
+                logger.info(f"파일 리스트 포함 저장 완료: {total_images}개 이미지")
+                if non_empty_folders:
+                    logger.debug(f"이미지가 있는 폴더: {non_empty_folders}")
+                if empty_folders:
+                    logger.debug(f"빈 폴더: {empty_folders}")
             
-            return True, is_new_product
+            return success, is_new_product
             
         except Exception as e:
             logger.error(f"DynamoDB 아이템 처리 중 오류 {main_category}-{sub_category}-{product_id}: {e}")
             return False, False
     
-    def process_meta_data(self, meta_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        메타 데이터를 DynamoDB 저장용으로 전처리합니다.
-        주요 작업:
-        - meta.json 파일에서 읽은 원본 메타 데이터를 DynamoDB에서 안전하게 저장할 수 있는 형태로 변환
-        - None 값은 제거하고, 기본 타입(str, int, float, bool)과 복합 타입(list, dict)은 그대로 유지
-        - DynamoDB에서 지원하지 않는 타입은 문자열로 변환
-        
-        Args:
-            meta_data: 원본 메타 데이터(meta.json 파일로 부터 읽은 python 딕셔너리)
-            
-        Returns:
-            Dict: 전처리된 메타 데이터
-        """
-        processed = {}
-        
-        # 기본 정보 복사
-        for key, value in meta_data.items():
-            # DynamoDB에서 지원하지 않는 타입 처리
-            if value is None:
-                continue
-            elif isinstance(value, (str, int, float, bool)):
-                processed[key] = value
-            elif isinstance(value, (list, dict)):
-                processed[key] = value
-            else:
-                processed[key] = str(value)
-        
-        return processed
+
     
     def upload_single_product(self, product_info: Dict[str, Any]) -> bool:
         """
@@ -341,23 +324,27 @@ class InitialUploader:
         logger.info(f"제품 업로드 시작: {main_category}-{sub_category}-{product_id}")
         
         try:
-            # 1. 메타 데이터 로드(meta.json 파일 로드)
-            meta_data = self.load_meta_json(meta_file)
-            if meta_data is None:
-                logger.error(f"메타 데이터 로드 실패: {product_id}")
+            # 1. 메타 데이터 파일 유효성 검사
+            if not self.validate_meta_file(meta_file):
+                logger.error(f"메타 데이터 파일 유효성 검사 실패: {product_id}")
                 return False
             
             # 2. 업로드할 파일 목록 생성
             files_to_upload = self.get_files_to_upload(product_dir)
             logger.info(f"업로드할 파일 개수: {len(files_to_upload)}")
             
-            # 3. S3에 파일 업로드
+            # 3. 이미지 파일들을 폴더별로 분류 (DynamoDB 저장용)
+            image_file_lists = self.classify_image_files_by_folder(files_to_upload)
+            
+            # 4. S3에 파일 업로드
             upload_stats = self.upload_product_files(main_category, sub_category, product_id, files_to_upload)
             
-            # 4. DynamoDB에 아이템 생성
-            db_success, is_new_product = self.create_dynamodb_item(main_category, sub_category, product_id)
+            # 5. DynamoDB에 아이템 생성 (파일 리스트 포함)
+            db_success, is_new_product = self.create_dynamodb_item(
+                main_category, sub_category, product_id, image_file_lists
+            )
             
-            # 5. 결과 통계 업데이트
+            # 6. 결과 통계 업데이트
             self.stats['total_files'] += len(files_to_upload)
             self.stats['uploaded_files'] += upload_stats['success']
             self.stats['failed_files'] += upload_stats['failed']
@@ -369,7 +356,7 @@ class InitialUploader:
                 self.stats['uploaded_products'] += 1
                 logger.info(f"제품 업로드 완료: {sub_category}-{product_id}")
                 
-                # 6. 새 제품인 경우에만 카테고리 메타데이터 업데이트
+                # 7. 새 제품인 경우에만 카테고리 메타데이터 업데이트
                 if is_new_product:
                     metadata_success = self.aws_manager.increment_product_count(main_category, sub_category)
                     if not metadata_success:
@@ -389,6 +376,43 @@ class InitialUploader:
             self.stats['failed_products'] += 1
             logger.error(f"제품 업로드 중 예상치 못한 오류 {sub_category}-{product_id}: {e}")
             return False
+    
+    def classify_image_files_by_folder(self, files_to_upload: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+        """
+        업로드할 파일들 중 이미지 파일만 폴더별로 분류합니다.
+        모든 지원 폴더에 대해 빈 리스트라도 포함하여 일관된 스키마를 유지합니다.
+        
+        Args:
+            files_to_upload: 업로드할 파일 정보 리스트
+            
+        Returns:
+            Dict[str, List[str]]: 폴더별 이미지 파일명 리스트 (빈 폴더 포함)
+        """
+        supported_folders = ['detail', 'summary', 'segment', 'text']
+        # 모든 지원 폴더를 빈 리스트로 초기화
+        image_file_lists = {folder: [] for folder in supported_folders}
+        
+        for file_info in files_to_upload:
+            relative_path = file_info['relative_path']
+            path_parts = relative_path.split('/')
+            
+            # 폴더 구조 분석: folder/filename 또는 filename
+            if len(path_parts) == 2:  # folder/filename
+                folder = path_parts[0]
+                filename = path_parts[1]
+                
+                # 지원하는 폴더이고 이미지 파일인 경우에만 추가
+                if (folder in supported_folders and 
+                    any(filename.lower().endswith(ext) for ext in self.image_extensions)):
+                    
+                    image_file_lists[folder].append(filename)
+                    logger.debug(f"이미지 파일 분류: {folder}/{filename}")
+            else:
+                # 루트 레벨 파일은 무시 (meta.json 등)
+                logger.debug(f"루트 레벨 파일 무시: {relative_path}")
+        
+        # 빈 폴더도 포함하여 반환
+        return image_file_lists
     
     def upload_all_products(self, max_products: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -522,7 +546,7 @@ def main():
         logger.info("AWS Manager 초기화 중...")
         aws_manager = create_aws_manager(
             region_name=args.region,
-            profile_name=args.profile
+
         )
         
         # 연결 테스트

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-이미지 캐시 관리
-S3에서 로드한 썸네일 이미지를 로컬에 캐싱하여 성능을 향상시킵니다.
+이미지 캐시 관리 (개선된 버전)
+S3에서 로드한 이미지를 제품 ID 기반으로 로컬에 캐싱하여 성능을 향상시킵니다.
+페이지 단위로 캐시를 관리하여 메모리와 저장 공간을 효율적으로 사용합니다.
 """
 
 import os
-import hashlib
+import shutil
 import requests
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Callable
 from PySide6.QtGui import QPixmap
 from PySide6.QtCore import QThread, Signal, QMutex, QMutexLocker
 import logging
@@ -16,73 +18,328 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class ImageDownloadThread(QThread):
-    """이미지 다운로드 스레드"""
+class PageImageDownloadThread(QThread):
+    """페이지별 이미지 배치 다운로드 스레드"""
     
-    image_downloaded = Signal(str, QPixmap)  # url, pixmap
-    download_failed = Signal(str, str)  # url, error_message
+    progress_updated = Signal(int, int)  # current, total
+    image_downloaded = Signal(str, str, str)  # product_id, folder, filename
+    download_completed = Signal()
+    download_failed = Signal(str)  # error_message
     
-    def __init__(self, url: str, cache_path: str):
+    def __init__(self, download_tasks: List[Dict], cache_dir: Path):
         super().__init__()
-        self.url = url
-        self.cache_path = cache_path
+        self.download_tasks = download_tasks  # [{'product_id': str, 'folder': str, 'filename': str, 'url': str}]
+        self.cache_dir = cache_dir
+        self._stop_requested = False
     
     def run(self):
         """스레드 실행"""
         try:
-            # HTTP 요청으로 이미지 다운로드
-            response = requests.get(self.url, timeout=10, stream=True)
-            response.raise_for_status()
+            total_tasks = len(self.download_tasks)
             
-            # 캐시 디렉토리 생성
-            os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
-            
-            # 파일로 저장
-            with open(self.cache_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            
-            # QPixmap으로 로드
-            pixmap = QPixmap(self.cache_path)
-            if not pixmap.isNull():
-                self.image_downloaded.emit(self.url, pixmap)
-            else:
-                logger.error(f"QPixmap 로드 실패 (null pixmap): {self.url[:100]}...")
-                self.download_failed.emit(self.url, "이미지 형식 오류")
+            for i, task in enumerate(self.download_tasks):
+                if self._stop_requested:
+                    break
                 
-        except requests.RequestException as e:
-            logger.error(f"HTTP 요청 실패: {self.url[:100]}... - {e}")
-            self.download_failed.emit(self.url, str(e))
+                try:
+                    product_id = task['product_id']
+                    folder = task['folder']
+                    filename = task['filename']
+                    url = task['url']
+                    
+                    # meta.json인 경우 특별 처리
+                    if folder == 'meta' and filename == 'meta.json':
+                        cache_path = self.cache_dir / product_id / filename
+                    else:
+                        # 캐시 경로 생성
+                        cache_path = self.cache_dir / product_id / folder / filename
+                    
+                    # 이미 존재하면 건너뛰기
+                    if cache_path.exists():
+                        self.image_downloaded.emit(product_id, folder, filename)
+                        self.progress_updated.emit(i + 1, total_tasks)
+                        continue
+                    
+                    # 디렉토리 생성
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # HTTP 요청으로 파일 다운로드
+                    response = requests.get(url, timeout=30, stream=True)
+                    response.raise_for_status()
+                    
+                    # 파일로 저장
+                    with open(cache_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if self._stop_requested:
+                                break
+                            f.write(chunk)
+                    
+                    if not self._stop_requested:
+                        self.image_downloaded.emit(product_id, folder, filename)
+                    
+                    self.progress_updated.emit(i + 1, total_tasks)
+                    
+                except Exception as e:
+                    logger.error(f"이미지 다운로드 실패 {task}: {e}")
+                    continue
+            
+            if not self._stop_requested:
+                self.download_completed.emit()
+                
         except Exception as e:
-            logger.error(f"예상치 못한 오류: {self.url[:100]}... - {e}")
-            self.download_failed.emit(self.url, str(e))
-
-
-class ImageCache:
-    """이미지 캐시 관리 클래스"""
+            logger.error(f"배치 다운로드 중 오류: {e}")
+            self.download_failed.emit(str(e))
     
-    def __init__(self, cache_dir: str = None, max_cache_size_mb: int = 500):
+    def stop(self):
+        """다운로드 중지"""
+        self._stop_requested = True
+
+
+class ProductImageCache:
+    """제품 기반 이미지 캐시 관리 클래스"""
+    
+    def __init__(self, cache_dir: str = None, max_cache_size_mb: int = 1000):
         """
         이미지 캐시 초기화
         
         Args:
-            cache_dir: 캐시 디렉토리 경로 (None이면 임시 디렉토리 사용)
+            cache_dir: 캐시 디렉토리 경로 (None이면 홈 디렉토리 사용)
             max_cache_size_mb: 최대 캐시 크기 (MB)
         """
         if cache_dir is None:
-            cache_dir = Path.home() / '.cache' / 'ai_dataset_curation' / 'images'
+            cache_dir = Path.home() / '.cache' / 'ai_dataset_curation' / 'product_images'
         
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         self.max_cache_size = max_cache_size_mb * 1024 * 1024  # MB to bytes
-        self.memory_cache = {}  # URL -> QPixmap
-        self.download_threads = {}  # URL -> QThread
+        self.memory_cache = {}  # (product_id, folder, filename) -> QPixmap
+        self.current_page_products = set()  # 현재 페이지의 제품 ID들
+        self.download_thread = None
         self.mutex = QMutex()
     
+    def set_current_page_products(self, product_ids: List[str]):
+        """현재 페이지의 제품 ID들 설정"""
+        with QMutexLocker(self.mutex):
+            self.current_page_products = set(product_ids)
+    
+    def download_page_images(self, download_tasks: List[Dict], 
+                           progress_callback: Callable[[int, int], None] = None,
+                           completed_callback: Callable[[], None] = None) -> bool:
+        """
+        페이지의 모든 이미지를 배치 다운로드(내부적으로 QThread 사용)
+        
+        Args:
+            download_tasks: 다운로드 작업 목록
+            progress_callback: 진행률 콜백 (current, total)
+            completed_callback: 완료 콜백
+            
+        Returns:
+            bool: 다운로드 시작 성공 여부
+        """
+        try:
+            # 이전 다운로드 스레드가 실행 중이면 중지
+            if self.download_thread and self.download_thread.isRunning():
+                self.download_thread.stop()
+                self.download_thread.wait(3000)
+            
+            # 새 다운로드 스레드 생성
+            self.download_thread = PageImageDownloadThread(download_tasks, self.cache_dir)
+            
+            # 시그널 연결
+            if progress_callback:
+                self.download_thread.progress_updated.connect(progress_callback) # (current, total)
+            
+            if completed_callback:
+                self.download_thread.download_completed.connect(completed_callback) # 다운로드 완료 시그널 연결
+            
+            self.download_thread.download_failed.connect(
+                lambda error: logger.error(f"페이지 이미지 다운로드 실패: {error}")
+            )
+            
+            # 다운로드 시작
+            self.download_thread.start()
+            return True
+            
+        except Exception as e:
+            logger.error(f"페이지 이미지 다운로드 시작 실패: {e}")
+            return False
+    
+    def get_product_image(self, product_id: str, folder: str, filename: str) -> Optional[QPixmap]:
+        """
+        제품 이미지를 캐시에서 가져오기
+        
+        Args:
+            product_id: 제품 ID
+            folder: 폴더명 (detail, segment, summary, text)
+            filename: 파일명
+            
+        Returns:
+            QPixmap: 캐시된 이미지 (없으면 None)
+        """
+        cache_key = (product_id, folder, filename)
+        
+        with QMutexLocker(self.mutex):
+            # 1. 메모리 캐시 확인
+            if cache_key in self.memory_cache:
+                return self.memory_cache[cache_key]
+        
+        # 2. 파일 캐시 확인
+        cache_path = self.cache_dir / product_id / folder / filename
+        if cache_path.exists():
+            try:
+                pixmap = QPixmap(str(cache_path))
+                if not pixmap.isNull():
+                    with QMutexLocker(self.mutex):
+                        self.memory_cache[cache_key] = pixmap
+                    return pixmap
+            except Exception as e:
+                logger.warning(f"캐시된 이미지 로드 실패 {cache_path}: {e}")
+        
+        return None
+    
+    def get_product_meta_json(self, product_id: str) -> Optional[Dict]:
+        """
+        제품의 meta.json 파일을 캐시에서 가져오기
+        
+        Args:
+            product_id: 제품 ID
+            
+        Returns:
+            Dict: meta.json 데이터 (없으면 None)
+        """
+        try:
+            cache_path = self.cache_dir / product_id / 'meta.json'
+            if cache_path.exists():
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.warning(f"meta.json 파일 로드 실패 {product_id}: {e}")
+        
+        return None
+    
+    def get_product_images(self, product_id: str) -> Dict[str, List[Dict[str, str]]]:
+        """
+        제품의 모든 폴더 이미지 정보 반환
+        
+        Args:
+            product_id: 제품 ID
+            
+        Returns:
+            Dict: 폴더별 이미지 정보 {folder: [{'filename': str, 'path': str}]}
+        """
+        result = {}
+        product_cache_dir = self.cache_dir / product_id
+        
+        if not product_cache_dir.exists():
+            return result
+        
+        for folder_path in product_cache_dir.iterdir():
+            if folder_path.is_dir():
+                folder_name = folder_path.name
+                result[folder_name] = []
+                
+                for image_file in folder_path.iterdir():
+                    if image_file.is_file() and image_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                        result[folder_name].append({
+                            'filename': image_file.name,
+                            'path': str(image_file)
+                        })
+        
+        return result
+    
+    def clear_non_current_page_cache(self):
+        """현재 페이지가 아닌 제품들의 캐시 정리"""
+        try:
+            # 메모리 캐시에서 현재 페이지가 아닌 항목 제거
+            with QMutexLocker(self.mutex):
+                keys_to_remove = []
+                for cache_key in self.memory_cache.keys():
+                    product_id = cache_key[0]
+                    if product_id not in self.current_page_products:
+                        keys_to_remove.append(cache_key)
+                
+                for key in keys_to_remove:
+                    del self.memory_cache[key]
+            
+            # 파일 캐시에서 현재 페이지가 아닌 제품 폴더 삭제
+            for product_dir in self.cache_dir.iterdir():
+                if product_dir.is_dir() and product_dir.name not in self.current_page_products:
+                    try:
+                        shutil.rmtree(product_dir)
+                        logger.debug(f"제품 캐시 삭제: {product_dir.name}")
+                    except Exception as e:
+                        logger.warning(f"제품 캐시 삭제 실패 {product_dir.name}: {e}")
+            
+            logger.info(f"페이지 캐시 정리 완료. 현재 페이지 제품 수: {len(self.current_page_products)}")
+            
+        except Exception as e:
+            logger.error(f"페이지 캐시 정리 중 오류: {e}")
+    
+    def clear_all_cache(self):
+        """모든 캐시 정리"""
+        try:
+            # 다운로드 스레드 중지
+            if self.download_thread and self.download_thread.isRunning():
+                self.download_thread.stop()
+                self.download_thread.wait(3000)
+            
+            # 메모리 캐시 정리
+            with QMutexLocker(self.mutex):
+                self.memory_cache.clear()
+                self.current_page_products.clear()
+            
+            # 파일 캐시 정리
+            if self.cache_dir.exists():
+                shutil.rmtree(self.cache_dir)
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
+            
+            logger.info("모든 이미지 캐시가 정리되었습니다.")
+            
+        except Exception as e:
+            logger.error(f"캐시 정리 중 오류: {e}")
+    
+    def get_cache_info(self) -> Dict:
+        """캐시 정보 반환"""
+        try:
+            total_size = 0
+            file_count = 0
+            product_count = 0
+            
+            if self.cache_dir.exists():
+                for product_dir in self.cache_dir.iterdir():
+                    if product_dir.is_dir():
+                        product_count += 1
+                        for file_path in product_dir.rglob('*'):
+                            if file_path.is_file():
+                                file_count += 1
+                                total_size += file_path.stat().st_size
+            
+            memory_count = len(self.memory_cache)
+            
+            return {
+                'cache_dir': str(self.cache_dir),
+                'product_count': product_count,
+                'file_count': file_count,
+                'total_size_mb': total_size / 1024 / 1024,
+                'memory_cache_count': memory_count,
+                'max_size_mb': self.max_cache_size / 1024 / 1024,
+                'current_page_products': len(self.current_page_products)
+            }
+            
+        except Exception as e:
+            logger.error(f"캐시 정보 조회 중 오류: {e}")
+            return {}
+    
+    def cleanup(self):
+        """정리 작업"""
+        if self.download_thread and self.download_thread.isRunning():
+            self.download_thread.stop()
+            self.download_thread.wait(3000)
+
     def get_image(self, url: str, callback=None) -> Optional[QPixmap]:
         """
-        이미지를 캐시에서 가져오거나 다운로드합니다.
+        기존 ImageCache와의 호환성을 위한 래퍼 메서드
         
         Args:
             url: 이미지 URL (HTTP/HTTPS 또는 file://)
@@ -91,205 +348,52 @@ class ImageCache:
         Returns:
             QPixmap: 캐시된 이미지 (즉시 사용 가능한 경우)
         """
-        with QMutexLocker(self.mutex):
-            # 로컬 파일 URL 처리 (file://)
+        try:
+            # file:// URL 처리
             if url.startswith('file://'):
                 return self._load_local_file(url, callback)
             
-            # 1. 메모리 캐시 확인
-            if url in self.memory_cache:
-                return self.memory_cache[url]
-            
-            # 2. 파일 캐시 확인
-            cache_path = self._get_cache_path(url)
-            if cache_path.exists():
+            # HTTP/HTTPS URL의 경우 원래 방식 사용 (폴백)
+            # URL에서 제품 정보 추출 시도
+            if '/detail/' in url or '/segment/' in url or '/summary/' in url or '/text/' in url:
+                # S3 URL 패턴 분석 시도
                 try:
-                    pixmap = QPixmap(str(cache_path))
-                    if not pixmap.isNull():
-                        self.memory_cache[url] = pixmap
-                        return pixmap
-                except Exception as e:
-                    logger.warning(f"캐시된 이미지 로드 실패 {url}: {e}")
-                    cache_path.unlink(missing_ok=True)
-            
-            # 3. 다운로드 시작 (이미 진행 중이 아닌 경우)
-            if url not in self.download_threads:
-                self._start_download(url, cache_path, callback)
-            
-            return None
-    
-    def _get_cache_path(self, url: str) -> Path:
-        """URL에 대한 캐시 파일 경로 생성"""
-        # URL을 해시하여 파일명 생성
-        url_hash = hashlib.md5(url.encode()).hexdigest()
-        
-        # 파일 확장자 추출
-        if url.lower().endswith(('.jpg', '.jpeg')):
-            ext = '.jpg'
-        elif url.lower().endswith('.png'):
-            ext = '.png'
-        elif url.lower().endswith('.gif'):
-            ext = '.gif'
-        elif url.lower().endswith('.webp'):
-            ext = '.webp'
-        else:
-            ext = '.jpg'  # 기본값
-        
-        return self.cache_dir / f"{url_hash}{ext}"
-    
-    def _start_download(self, url: str, cache_path: Path, callback=None):
-        """이미지 다운로드 시작"""
-        download_thread = ImageDownloadThread(url, str(cache_path))
-        
-        # 콜백 저장 (lambda 변수 캡처 문제 해결)
-        def on_success(u, p):
-            self._on_download_completed(u, p, callback)
-        
-        def on_failure(u, e):
-            self._on_download_failed(u, e, callback)
-        
-        def on_finished():
-            self._cleanup_thread(url)
-        
-        # 시그널 연결
-        download_thread.image_downloaded.connect(on_success)
-        download_thread.download_failed.connect(on_failure)
-        download_thread.finished.connect(on_finished)
-        
-        self.download_threads[url] = download_thread
-        download_thread.start()
-    
-    def _on_download_completed(self, url: str, pixmap: QPixmap, callback=None):
-        """다운로드 완료 처리"""
-        with QMutexLocker(self.mutex):
-            self.memory_cache[url] = pixmap
-        
-        if callback:
-            try:
-                # 위젯이 삭제되었는지 확인
-                if hasattr(callback, '__self__'):
-                    widget = callback.__self__
-                    if hasattr(widget, '_is_destroyed') and widget._is_destroyed:
-                        logger.warning(f"위젯이 이미 삭제됨, 콜백 건너뜀: {url[:100]}...")
-                        return
-                
-                callback(url, pixmap)
-                
-            except RuntimeError as e:
-                if "already deleted" in str(e) or "Internal C++ object" in str(e):
-                    logger.warning(f"위젯 삭제로 인한 콜백 건너뜀: {url[:100]}...")
-                else:
-                    logger.error(f"콜백 호출 런타임 오류: {url[:100]}... - {str(e)}")
-            except Exception as e:
-                logger.error(f"콜백 호출 오류: {url[:100]}... - {str(e)}")
-        
-        # 캐시 크기 관리
-        self._manage_cache_size()
-    
-    def _on_download_failed(self, url: str, error_message: str, callback=None):
-        """다운로드 실패 처리"""
-        logger.error(f"이미지 다운로드 실패: {url[:100]}... - {error_message}")
-        
-        if callback:
-            try:
-                callback(url, None)
-            except Exception as e:
-                logger.error(f"실패 콜백 호출 오류: {url[:100]}... - {str(e)}")
-    
-    def _cleanup_thread(self, url: str):
-        """다운로드 스레드 정리"""
-        with QMutexLocker(self.mutex):
-            if url in self.download_threads:
-                thread = self.download_threads.pop(url)
-                if thread:
-                    thread.deleteLater()
-    
-    def _manage_cache_size(self):
-        """캐시 크기 관리"""
-        try:
-            # 캐시 디렉토리의 총 크기 계산
-            total_size = sum(f.stat().st_size for f in self.cache_dir.rglob('*') if f.is_file())
-            
-            if total_size > self.max_cache_size:
-                # 파일들을 수정 시간 순으로 정렬 (오래된 것부터)
-                files = [(f, f.stat().st_mtime) for f in self.cache_dir.rglob('*') if f.is_file()]
-                files.sort(key=lambda x: x[1])
-                
-                # 캐시 크기가 제한 이하가 될 때까지 오래된 파일 삭제
-                for file_path, _ in files:
-                    if total_size <= self.max_cache_size * 0.8:  # 20% 여유 확보
-                        break
+                    # URL에서 파일명 추출
+                    filename = url.split('/')[-1].split('?')[0]  # 쿼리 파라미터 제거
                     
-                    try:
-                        file_size = file_path.stat().st_size
-                        file_path.unlink()
-                        total_size -= file_size
-                        
-                        # 메모리 캐시에서도 제거
-                        url_to_remove = None
-                        for url, pixmap in self.memory_cache.items():
-                            if self._get_cache_path(url) == file_path:
-                                url_to_remove = url
-                                break
-                        
-                        if url_to_remove:
-                            del self.memory_cache[url_to_remove]
-                            
-                    except Exception as e:
-                        logger.warning(f"캐시 파일 삭제 실패 {file_path}: {e}")
-                
-                logger.info(f"캐시 정리 완료. 현재 크기: {total_size / 1024 / 1024:.1f}MB")
-                
-        except Exception as e:
-            logger.error(f"캐시 크기 관리 중 오류: {e}")
-    
-    def preload_images(self, urls: list):
-        """이미지 목록을 미리 로드"""
-        for url in urls:
-            self.get_image(url)
-    
-    def clear_cache(self):
-        """캐시 정리"""
-        # 메모리 캐시 정리
-        with QMutexLocker(self.mutex):
-            self.memory_cache.clear()
-        
-        # 다운로드 스레드 정리
-        for url, thread in list(self.download_threads.items()):
-            if thread and thread.isRunning():
-                thread.quit()
-                thread.wait(1000)  # 1초 대기
-            self._cleanup_thread(url)
-        
-        # 파일 캐시 정리
-        try:
-            for file_path in self.cache_dir.rglob('*'):
-                if file_path.is_file():
-                    file_path.unlink()
+                    # 폴더 추출
+                    if '/detail/' in url:
+                        folder = 'detail'
+                    elif '/segment/' in url:
+                        folder = 'segment'
+                    elif '/summary/' in url:
+                        folder = 'summary'
+                    elif '/text/' in url:
+                        folder = 'text'
+                    else:
+                        folder = 'unknown'
+                    
+                    # 제품 ID 추출 시도 (현재 페이지 제품들에서 찾기)
+                    for product_id in self.current_page_products:
+                        pixmap = self.get_product_image(product_id, folder, filename)
+                        if pixmap:
+                            if callback:
+                                callback(url, pixmap)
+                            return pixmap
+                    
+                except Exception as e:
+                    logger.debug(f"URL 파싱 실패, 폴백 모드 사용: {e}")
             
-            logger.info("이미지 캐시가 정리되었습니다.")
+            # 캐시에서 찾을 수 없는 경우 None 반환
+            if callback:
+                callback(url, None)
+            return None
             
         except Exception as e:
-            logger.error(f"캐시 정리 중 오류: {e}")
-    
-    def get_cache_info(self) -> dict:
-        """캐시 정보 반환"""
-        try:
-            file_count = len(list(self.cache_dir.rglob('*')))
-            total_size = sum(f.stat().st_size for f in self.cache_dir.rglob('*') if f.is_file())
-            memory_count = len(self.memory_cache)
-            
-            return {
-                'cache_dir': str(self.cache_dir),
-                'file_count': file_count,
-                'total_size_mb': total_size / 1024 / 1024,
-                'memory_cache_count': memory_count,
-                'max_size_mb': self.max_cache_size / 1024 / 1024
-            }
-            
-        except Exception as e:
-            logger.error(f"캐시 정보 조회 중 오류: {e}")
-            return {}
+            logger.error(f"get_image 호환성 메서드 오류: {e}")
+            if callback:
+                callback(url, None)
+            return None
     
     def _load_local_file(self, file_url: str, callback=None) -> Optional[QPixmap]:
         """로컬 파일 URL (file://) 처리"""
@@ -297,9 +401,14 @@ class ImageCache:
             # file:// 제거하고 로컬 경로 추출
             local_path = file_url.replace('file://', '')
             
-            # 메모리 캐시 확인
-            if file_url in self.memory_cache:
-                return self.memory_cache[file_url]
+            # 메모리 캐시 확인 (file URL을 키로 사용)
+            cache_key = ('file', local_path, '')
+            with QMutexLocker(self.mutex):
+                if cache_key in self.memory_cache:
+                    pixmap = self.memory_cache[cache_key]
+                    if callback:
+                        callback(file_url, pixmap)
+                    return pixmap
             
             # 파일 존재 확인
             if not os.path.exists(local_path):
@@ -312,7 +421,8 @@ class ImageCache:
             pixmap = QPixmap(local_path)
             if not pixmap.isNull():
                 # 메모리 캐시에 저장
-                self.memory_cache[file_url] = pixmap
+                with QMutexLocker(self.mutex):
+                    self.memory_cache[cache_key] = pixmap
                 
                 # 콜백 호출
                 if callback:
@@ -329,4 +439,8 @@ class ImageCache:
             logger.error(f"로컬 파일 로드 오류 {file_url}: {str(e)}")
             if callback:
                 callback(file_url, None)
-            return None 
+            return None
+
+
+# 하위 호환성을 위한 별칭
+ImageCache = ProductImageCache 

@@ -8,7 +8,7 @@ import boto3
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, List, Dict
 from botocore.exceptions import ClientError, NoCredentialsError
 from pathlib import Path
 import mimetypes
@@ -107,7 +107,15 @@ class AWSManager:
             elif 'M' in value:  # Map
                 converted[key] = self._convert_dynamodb_item(value['M'])
             elif 'L' in value:  # List
-                converted[key] = [self._convert_dynamodb_item({'item': item})['item'] for item in value['L']]
+                # List 내부 아이템들을 변환
+                converted_list = []
+                for list_item in value['L']:
+                    if 'S' in list_item:  # String 아이템
+                        converted_list.append(list_item['S'])
+                    else:
+                        # 다른 타입의 아이템은 재귀 변환
+                        converted_list.append(self._convert_dynamodb_item({'item': list_item})['item'])
+                converted[key] = converted_list
             else:
                 # 알 수 없는 타입은 그대로 유지
                 converted[key] = value
@@ -192,59 +200,7 @@ class AWSManager:
             logger.error(f"S3 업로드 중 예상치 못한 오류 {s3_key}: {e}")
             return False
     
-    def get_s3_urls(self, main_category: str, sub_category: int, product_id: str, folder_name: str = None) -> list[dict[str, str]]:
-        """
-        S3의 객체(key) 값을 바탕으로 generate_presigned_url 함수를 통해 다운받을 수 있는 URL 목록을 가져옵니다.
-        
-        Args:
-            main_category: 메인 카테고리
-            sub_category: 서브 카테고리 ID
-            product_id: 제품 ID
-            folder_name: 특정 폴더명 (None이면 모든 폴더)
-            
-        Returns:
-            List[Dict[str, str]]: 이미지 정보 리스트 [{'key': '...', 'url': '...', 'folder': '...'}]
-        """
-        try:
-            prefix = f"{main_category}/{sub_category}/{product_id}/"
-            if folder_name:
-                prefix += f"{folder_name}/"
-            
-            response = self.s3_client.list_objects_v2(
-                Bucket=self.bucket_name,
-                Prefix=prefix
-            )
-            
-            images = []
-            if 'Contents' in response: # 반환된 딕셔너리에 Contents 키가 있는경우 
-                for obj in response['Contents']:
-                    key = obj['Key'] # 객체의 키(파일명) 
-                    # # 이미지 파일만 필터링
-                    # if key.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')):
-                    # Presigned URL 생성 (1시간 유효)
-                    url = self.s3_client.generate_presigned_url(
-                        'get_object',
-                        Params={'Bucket': self.bucket_name, 'Key': key},
-                        ExpiresIn=3600
-                    )
-                    
-                    # 폴더명 추출
-                    path_parts = key.split('/')
-                    folder = path_parts[-2] if len(path_parts) > 1 else ''
-                    
-                    images.append({
-                        'key': key,
-                        'url': url,
-                        'folder': folder,
-                        'filename': path_parts[-1]
-                    })
-            
-            logger.info(f"S3 이미지 조회 완료: {product_id}, 폴더: {folder_name}, 개수: {len(images)}")
-            return images
-            
-        except ClientError as e:
-            logger.error(f"S3 이미지 조회 실패 {product_id}: {e}")
-            return []
+
     
     def tag_s3_object(self, s3_key: str, tags: dict[str, str]) -> bool:
         """
@@ -395,7 +351,8 @@ class AWSManager:
     # DynamoDB 관련 함수들
     # =============================================================================
     
-    def create_product_item(self, main_category: str, sub_category: int, product_id: str) -> bool:
+    def create_product_item(self, main_category: str, sub_category: int, product_id: str, 
+                           file_lists: dict[str, list[str]] = None) -> tuple[bool, bool]:
         """
         DynamoDB에 제품 아이템을 생성하거나 업데이트합니다.
         기존 아이템이 있으면 덮어쓰고, 없으면 새로 생성합니다.
@@ -403,9 +360,11 @@ class AWSManager:
         Args:
             main_category: 메인 카테고리
             sub_category: 서브 카테고리 ID
-            product_id: 제품 ID    
+            product_id: 제품 ID
+            file_lists: 폴더별 파일 리스트 (선택적)
+            
         Returns:
-            bool: 새 제품이면 True, 기존 제품이면 False
+            tuple[bool, bool]: (처리 성공 여부, 새 제품 여부)
         """
         try:
             # 먼저 기존 아이템 존재 여부 확인
@@ -427,6 +386,15 @@ class AWSManager:
             if is_new_product:
                 item['created_at'] = {'S': current_time}
             
+            # 파일 리스트 추가 (빈 리스트 포함)
+            if file_lists:
+                supported_folders = ['detail', 'summary', 'segment', 'text']
+                for folder in supported_folders:
+                    if folder in file_lists:
+                        # 파일명 리스트를 DynamoDB List로 저장 (빈 리스트 허용)
+                        string_list = [{'S': filename} for filename in file_lists[folder]]
+                        item[folder] = {'L': string_list}
+            
             self.dynamodb_client.put_item(
                 TableName=self.table_name,
                 Item=item
@@ -437,11 +405,14 @@ class AWSManager:
             else:
                 logger.info(f"DynamoDB 기존 아이템 업데이트 완료: {main_category}-{sub_category}-{product_id}")
             
-            return is_new_product
+            if file_lists:
+                logger.debug(f"파일 리스트 포함하여 저장: {file_lists}")
+            
+            return True, is_new_product
             
         except ClientError as e:
             logger.error(f"DynamoDB 아이템 처리 실패 {main_category}-{sub_category}-{product_id}: {e}")
-            return False
+            return False, False
     
     def get_product_list(self, sub_category: int, limit: int = 50, 
                         exclusive_start_key: dict[str, Any]|None = None) -> tuple[list[dict[str, Any]], dict[str, Any]|None]:
@@ -583,6 +554,119 @@ class AWSManager:
             logger.error(f"DynamoDB 큐레이션 결과 업데이트 실패 {sub_category}-{product_id}: {e}")
             return False
     
+    def update_product_file_lists(self, sub_category: int, product_id: str, 
+                                file_lists: dict[str, list[str]]) -> bool:
+        """
+        DynamoDB에 제품의 파일 리스트를 업데이트합니다.
+        
+        Args:
+            sub_category: 서브 카테고리 ID
+            product_id: 제품 ID
+            file_lists: 폴더별 파일 리스트 {'detail': ['file1.jpg', 'file2.jpg'], 'summary': [...], ...}
+            
+        Returns:
+            bool: 업데이트 성공 여부
+        """
+        try:
+            current_time = self._get_current_timestamp()
+            
+            # 업데이트할 필드들 정의
+            supported_folders = ['detail', 'summary', 'segment', 'text']
+            
+            update_expression_parts = ["last_updated_at = :timestamp"]
+            expression_values = {':timestamp': {'S': current_time}}
+            
+            # 각 폴더별 파일 리스트 추가
+            for folder in supported_folders:
+                if folder in file_lists:
+                    # 파일명 리스트를 DynamoDB List로 저장 (빈 리스트 허용)
+                    update_expression_parts.append(f"{folder} = :{folder}")
+                    string_list = [{'S': filename} for filename in file_lists[folder]]
+                    expression_values[f':{folder}'] = {'L': string_list}
+            
+            if len(update_expression_parts) == 1:  # timestamp만 있는 경우
+                logger.warning(f"업데이트할 파일 리스트가 없습니다: {sub_category}-{product_id}")
+                return True
+            
+            update_expression = "SET " + ", ".join(update_expression_parts)
+            
+            self.dynamodb_client.update_item(
+                TableName=self.table_name,
+                Key={
+                    'sub_category': {'N': str(sub_category)},
+                    'product_id': {'S': product_id}
+                },
+                UpdateExpression=update_expression,
+                ExpressionAttributeValues=expression_values
+            )
+            
+            logger.info(f"DynamoDB 파일 리스트 업데이트 성공: {sub_category}-{product_id}")
+            logger.debug(f"업데이트된 파일 리스트: {file_lists}")
+            return True
+            
+        except ClientError as e:
+            logger.error(f"DynamoDB 파일 리스트 업데이트 실패 {sub_category}-{product_id}: {e}")
+            return False
+    
+    def get_product_file_lists(self, sub_category: int, product_id: str) -> dict[str, list[str]]:
+        """
+        DynamoDB에서 제품의 파일 리스트를 조회합니다.
+        
+        Args:
+            sub_category: 서브 카테고리 ID
+            product_id: 제품 ID
+            
+        Returns:
+            Dict[str, List[str]]: 폴더별 파일 리스트
+        """
+        try:
+            product_detail = self.get_product_detail(sub_category, product_id)
+            
+            if product_detail is None:
+                logger.warning(f"제품을 찾을 수 없습니다: {sub_category}-{product_id}")
+                return {}
+            
+            file_lists = {}
+            supported_folders = ['detail', 'summary', 'segment', 'text']
+            
+            for folder in supported_folders:
+                if folder in product_detail:
+                    # DynamoDB에서 List로 저장된 데이터를 리스트로 변환
+                    if isinstance(product_detail[folder], list):
+                        file_lists[folder] = product_detail[folder]
+                    else:
+                        file_lists[folder] = []
+            
+            logger.info(f"파일 리스트 조회 성공: {sub_category}-{product_id}")
+            return file_lists
+            
+        except Exception as e:
+            logger.error(f"파일 리스트 조회 실패 {sub_category}-{product_id}: {e}")
+            return {}
+    
+    def construct_s3_keys_from_file_lists(self, main_category: str, sub_category: int, 
+                                        product_id: str, file_lists: dict[str, list[str]]) -> list[str]:
+        """
+        파일 리스트로부터 S3 객체 키들을 구성합니다.
+        
+        Args:
+            main_category: 메인 카테고리
+            sub_category: 서브 카테고리 ID
+            product_id: 제품 ID
+            file_lists: 폴더별 파일 리스트
+            
+        Returns:
+            List[str]: S3 객체 키 리스트
+        """
+        s3_keys = []
+        
+        for folder, filenames in file_lists.items():
+            for filename in filenames:
+                s3_key = f"{main_category}/{sub_category}/{product_id}/{folder}/{filename}"
+                s3_keys.append(s3_key)
+        
+        return s3_keys
+    
     def get_product_detail(self, sub_category: int, product_id: str) -> dict[str, Any]|None:
         """
         특정 제품의 상세 정보를 조회합니다.
@@ -623,8 +707,13 @@ class AWSManager:
     
     def get_category_metadata(self) -> dict[str, Any]|None:
         """
-        DynamoDB에서 카테고리 메타데이터를 조회합니다.
-        
+        DynamoDB에서 카테고리 메타데이터를 조회합니다. 
+        - 파티션 키인 sub_category는 0으로 고정되어 있고, 정렬키인 product_id는 CATEGORY_METADATA로 입력한경우 해당 table의 메타데이터를 조회합니다.
+        - 메타데이터는 categories_info 항목에 저장되어 있습니다.
+            - main_categories: 메인 카테고리 목록
+            - sub_categories: 서브 카테고리 목록
+            - product_counts: 카테고리별 제품 수
+            - total_products: 총 제품 수
         Returns:
             Optional[Dict]: 카테고리 메타데이터 (없으면 None)
         """
@@ -663,14 +752,12 @@ class AWSManager:
         try:
             current_time = self._get_current_timestamp()
             
-            # 메타데이터 항목 구성
+            # 메타데이터 항목 구성 (다른 아이템들과 필드명 통일)
             item = {
                 'sub_category': {'N': '0'},  # 메타데이터 식별자
                 'product_id': {'S': 'CATEGORY_METADATA'},
-                'item_type': {'S': 'CATEGORY_METADATA'},
                 'categories_info': {'S': json.dumps(categories_info, ensure_ascii=False)},
-                'last_updated': {'S': current_time},
-                'created_at': {'S': current_time}
+                'last_updated_at': {'S': current_time}  # 다른 아이템들과 일관성 유지
             }
             
             self.dynamodb_client.put_item(
@@ -982,6 +1069,108 @@ class AWSManager:
         except ClientError as e:
             logger.error(f"통계 정보 조회 실패: {e}")
             return {}
+
+
+
+    def batch_get_product_images_from_data(self, main_category: str, sub_category: int, 
+                                          product_data_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        이미 가져온 제품 데이터에서 직접 파일 리스트를 추출하여 이미지 정보를 배치로 수집합니다.
+        DynamoDB 추가 호출 없이 pagination으로 가져온 데이터를 활용하여 S3 키를 구성합니다.
+        
+        Args:
+            main_category: 메인 카테고리
+            sub_category: 서브 카테고리 ID
+            product_data_list: 이미 조회된 제품 데이터 목록 (DynamoDB에서 가져온 데이터)
+            
+        Returns:
+            List[Dict]: 다운로드 작업 목록 [{'product_id': str, 'folder': str, 'filename': str, 'url': str}]
+        """
+        download_tasks = []
+        
+        try:
+            # 지원하는 폴더명들
+            supported_folders = ['detail', 'summary', 'segment', 'text']
+            
+            for product_data in product_data_list:
+                try:
+                    product_id = product_data.get('product_id')
+                    if not product_id:
+                        logger.warning("제품 데이터에 product_id가 없습니다.")
+                        continue
+                    
+                    # 각 폴더별로 파일 리스트 추출
+                    for folder in supported_folders:
+                        filenames = product_data.get(folder, [])
+                        
+                        # 빈 리스트인 경우 건너뛰기
+                        if not filenames or not isinstance(filenames, list):
+                            continue
+                        
+                        # 각 파일명에 대해 S3 키 구성 및 Presigned URL 생성
+                        for filename in filenames:
+                            if not filename:  # 빈 문자열 체크
+                                continue
+                                
+                            # S3 키 구성: main_category/sub_category/product_id/folder/filename
+                            s3_key = f"{main_category}/{sub_category}/{product_id}/{folder}/{filename}"
+                            
+                            try:
+                                # Presigned URL 생성 (1시간 유효)
+                                url = self.s3_client.generate_presigned_url(
+                                    'get_object',
+                                    Params={'Bucket': self.bucket_name, 'Key': s3_key},
+                                    ExpiresIn=3600
+                                )
+                                
+                                download_tasks.append({
+                                    'product_id': product_id,
+                                    'folder': folder,
+                                    'filename': filename,
+                                    'url': url,
+                                    'key': s3_key
+                                })
+                                
+                            except ClientError as e:
+                                logger.warning(f"Presigned URL 생성 실패 {s3_key}: {e}")
+                                continue
+                    
+                    # meta.json 파일도 다운로드 태스크에 추가
+                    meta_json_key = f"{main_category}/{sub_category}/{product_id}/meta.json"
+                    try:
+                        # meta.json Presigned URL 생성 (1시간 유효)
+                        meta_url = self.s3_client.generate_presigned_url(
+                            'get_object',
+                            Params={'Bucket': self.bucket_name, 'Key': meta_json_key},
+                            ExpiresIn=3600
+                        )
+                        
+                        download_tasks.append({
+                            'product_id': product_id,
+                            'folder': 'meta',  # meta.json을 구분하기 위한 특별한 폴더명
+                            'filename': 'meta.json',
+                            'url': meta_url,
+                            'key': meta_json_key
+                        })
+                        
+                    except ClientError as e:
+                        logger.debug(f"meta.json Presigned URL 생성 실패 {meta_json_key}: {e}")
+                        # meta.json은 필수가 아니므로 경고만 남기고 계속 진행
+                    
+                    logger.debug(f"제품 {product_id} 이미지 수집 완료 (데이터 기반)")
+                    
+                except Exception as e:
+                    logger.error(f"제품 데이터 처리 실패: {e}")
+                    continue
+            
+            logger.info(f"배치 이미지 수집 완료 (데이터 기반): {len(product_data_list)}개 제품, {len(download_tasks)}개 이미지")
+            return download_tasks
+            
+        except Exception as e:
+            logger.error(f"배치 이미지 수집 중 오류 (데이터 기반): {e}")
+            return []
+
+
 
 
 # 전역 인스턴스 생성 함수

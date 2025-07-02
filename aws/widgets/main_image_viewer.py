@@ -97,36 +97,6 @@ class MetaJsonDialog(QDialog):
         layout.addWidget(button_box)
 
 
-class MetaJsonWorker(QThread):
-    """meta.json 다운로드를 위한 워커 쓰레드"""
-    
-    data_loaded = Signal(dict)  # meta.json 데이터
-    error_occurred = Signal(str)  # 에러 메시지
-    
-    def __init__(self, aws_manager, main_category: str, sub_category: int, product_id: str):
-        super().__init__()
-        self.aws_manager = aws_manager
-        self.main_category = main_category
-        self.sub_category = sub_category
-        self.product_id = product_id
-    
-    def run(self):
-        """백그라운드에서 meta.json 다운로드"""
-        try:
-            meta_data = self.aws_manager.get_meta_json(
-                self.main_category, 
-                self.sub_category, 
-                self.product_id
-            )
-            
-            if meta_data:
-                self.data_loaded.emit(meta_data)
-            else:
-                self.error_occurred.emit("meta.json 파일을 찾을 수 없습니다.")
-                
-        except Exception as e:
-            self.error_occurred.emit(f"오류 발생: {str(e)}")
-
 
 class CurationWorker(QThread):
     """큐레이션 완료 처리를 위한 워커 쓰레드"""
@@ -175,7 +145,7 @@ class CurationWorker(QThread):
 
 
 class GridImageWidget(QWidget):
-    """그리드용 이미지 위젯"""
+    """중앙 패널에서 하나의 이미지 객체를 담당하는 위젯"""
     
     clicked = Signal(dict)  # 이미지 데이터
     double_clicked = Signal(dict)  # 더블클릭된 이미지 데이터
@@ -304,6 +274,7 @@ class GridImageWidget(QWidget):
             self.set_placeholder_image("URL 없음")
             return
         
+        #RECHECK : 왜 segment 이미지인 경우를 분리해서 하는거지 ? 
         # 로컬 segment 이미지인 경우 직접 로드
         if self.image_data.get('is_local_segment', False):
             self.load_local_segment_image()
@@ -376,27 +347,20 @@ class GridImageWidget(QWidget):
         """안전한 이미지 로드 완료 콜백 - 위젯 상태 확인"""
         # 위젯이 파괴되었거나 Qt 객체가 삭제된 경우 무시
         if self._is_destroyed:
-            logger.warning(f"위젯 파괴됨으로 인한 콜백 무시: {url[:100]}...")
             return
             
         try:
+            # 부모 위젯이 여전히 유효한지 먼저 확인 (빠른 체크)
+            if not self.parent():
+                return
+                
+            # Qt 객체가 여전히 유효한지 확인
+            if not self.image_label or not hasattr(self, 'image_label'):
+                return
+            
             # URL이 일치하지 않으면 무시
             widget_url = self.image_data.get('url', '')
             if url != widget_url:
-                filename = self.image_data.get('filename', 'unknown')
-                logger.warning(f"URL 불일치로 인한 콜백 무시: {filename}")
-                return
-            
-            # Qt 객체가 여전히 유효한지 확인
-            if not self.image_label or not hasattr(self, 'image_label'):
-                filename = self.image_data.get('filename', 'unknown')
-                logger.warning(f"이미지 레이블 없음: {filename}")
-                return
-                
-            # 부모 위젯이 여전히 유효한지 확인
-            if not self.parent():
-                filename = self.image_data.get('filename', 'unknown')
-                logger.warning(f"부모 위젯 없음: {filename}")
                 return
                 
             # 이미지 설정
@@ -515,13 +479,13 @@ class GridImageWidget(QWidget):
 
 class MainImageViewer(QWidget):
     """
-    메인 이미지 뷰어 위젯 \n
-    - representative_selected : Signal(dict, str) 대표 이미지 선택 후 우측 하단의 버튼을 누르면 해당 선택된 이미지 데이터, 타입 전달 \n
-                                => representative_panel의 메서드(add_representative_image) 에게 전달 
-    - image_cache : 이미지 캐시(객체) \n
-    - current_images : 현재 이미지 리스트(딕셔너리) \n
-    - current_image_index : 현재 이미지 인덱스(정수) \n
-    - current_product : 현재 상품 데이터(딕셔너리) \n
+    메인 이미지 뷰어 위젯 
+        - representative_selected : Signal(dict, str) 대표 이미지 선택 후 우측 하단의 버튼을 누르면 해당 선택된 이미지 데이터, 타입 전달 
+                                    => representative_panel의 메서드(add_representative_image) 에게 전달 
+        - image_cache : 이미지 캐시(객체) 
+        - current_images : 현재 이미지 리스트(딕셔너리) 
+        - current_image_index : 현재 이미지 인덱스(정수) 
+        - current_product : 현재 상품 데이터(딕셔너리) 
     """
 
     representative_selected = Signal(dict, str)  # 이미지 데이터, 타입
@@ -543,7 +507,6 @@ class MainImageViewer(QWidget):
         self.pending_moves = []  # S3에 반영되지 않은 이동 목록 [(source_key, dest_key), ...]
         
         self.folder_tabs = {}
-        self.meta_json_worker = None  # meta.json 다운로드 워커
         self.curation_worker = None  # 큐레이션 워커
         self.setup_ui()
     
@@ -614,30 +577,24 @@ class MainImageViewer(QWidget):
     def update_button_states(self, folder_name: str, image_data: dict):
         """선택된 이미지에 따라 버튼 상태 업데이트"""
         try:
-            # Text 폴더로 이동 버튼: segment 폴더의 이미지만 가능 (로컬 segment는 제외)
-            can_move_to_text = (folder_name == 'segment' and 
-                               not image_data.get('is_local_segment', False))
+            # Text 폴더로 이동 버튼: segment 폴더의 모든 이미지 가능 (S3 및 로컬 segment 포함)
+            can_move_to_text = (folder_name == 'segment')
             self.move_to_text_btn.setEnabled(can_move_to_text)
             
             # 되돌리기 버튼: 이동 히스토리가 있을 때만 가능
             can_undo = len(self.move_history) > 0
             self.undo_btn.setEnabled(can_undo)
             
-            # 큐레이션 완료 버튼: 대기 중인 이동이 있을 때만 가능
-            can_complete = len(self.pending_moves) > 0
-            self.complete_curation_btn.setEnabled(can_complete)
-            
             # 버튼 툴팁 업데이트
             if can_move_to_text:
                 filename = image_data.get('filename', 'Unknown')
-                self.move_to_text_btn.setToolTip(f"'{filename}'을 Text 폴더로 이동")
+                is_local = image_data.get('is_local_segment', False)
+                if is_local:
+                    self.move_to_text_btn.setToolTip(f"'{filename}'을 Text 폴더로 이동 (로컬 이미지)")
+                else:
+                    self.move_to_text_btn.setToolTip(f"'{filename}'을 Text 폴더로 이동")
             else:
-                self.move_to_text_btn.setToolTip("Segment 폴더의 S3 이미지만 Text 폴더로 이동 가능")
-            
-            if can_complete:
-                self.complete_curation_btn.setToolTip(f"{len(self.pending_moves)}개의 변경사항을 S3에 반영")
-            else:
-                self.complete_curation_btn.setToolTip("변경사항이 없습니다")
+                self.move_to_text_btn.setToolTip("Segment 폴더의 이미지만 Text 폴더로 이동 가능")
                 
         except Exception as e:
             logger.error(f"버튼 상태 업데이트 오류: {str(e)}")
@@ -656,10 +613,6 @@ class MainImageViewer(QWidget):
                 self.show_status_message("❌ 이동할 이미지를 선택해주세요", error=True)
                 return
             
-            if selected_image.get('is_local_segment', False):
-                self.show_status_message("❌ 로컬 Segment 이미지는 이동할 수 없습니다", error=True)
-                return
-            
             # 이미지 이동 수행
             from datetime import datetime
             timestamp = datetime.now().isoformat()
@@ -669,12 +622,14 @@ class MainImageViewer(QWidget):
                 'image_data': selected_image.copy(),
                 'from_folder': 'segment',
                 'to_folder': 'text',
-                'timestamp': timestamp
+                'timestamp': timestamp,
+                'is_local_segment': selected_image.get('is_local_segment', False)
             }
             self.move_history.append(move_record)
             
-            # S3 키 계산
-            if self.current_product:
+            # S3 키 계산 (S3 이미지인 경우에만)
+            is_local_segment = selected_image.get('is_local_segment', False)
+            if not is_local_segment and self.current_product:
                 main_category = self.current_product.get('main_category')
                 sub_category = self.current_product.get('sub_category')
                 product_id = self.current_product.get('product_id')
@@ -690,7 +645,10 @@ class MainImageViewer(QWidget):
             self.move_image_local(selected_image, 'segment', 'text')
             
             filename = selected_image.get('filename', 'Unknown')
-            self.show_status_message(f"✅ '{filename}'을 Text 폴더로 이동했습니다")
+            if is_local_segment:
+                self.show_status_message(f"✅ '{filename}'을 Text 폴더로 이동했습니다 (로컬 이미지)")
+            else:
+                self.show_status_message(f"✅ '{filename}'을 Text 폴더로 이동했습니다")
             
             # 버튼 상태 업데이트
             self.update_all_button_states()
@@ -743,8 +701,9 @@ class MainImageViewer(QWidget):
             # 마지막 이동 기록 가져오기
             last_move = self.move_history.pop()
             
-            # 대기 중인 S3 이동에서도 제거
-            if self.pending_moves:
+            # 대기 중인 S3 이동에서도 제거 (S3 이미지인 경우에만)
+            was_local_segment = last_move.get('is_local_segment', False)
+            if not was_local_segment and self.pending_moves:
                 # 마지막 이동과 매칭되는 S3 이동 제거
                 self.pending_moves.pop()
             
@@ -756,7 +715,10 @@ class MainImageViewer(QWidget):
             self.move_image_local(image_data, from_folder, to_folder)
             
             filename = image_data.get('filename', 'Unknown')
-            self.show_status_message(f"↶ '{filename}'을 {to_folder.upper()} 폴더로 되돌렸습니다")
+            if was_local_segment:
+                self.show_status_message(f"↶ '{filename}'을 {to_folder.upper()} 폴더로 되돌렸습니다 (로컬 이미지)")
+            else:
+                self.show_status_message(f"↶ '{filename}'을 {to_folder.upper()} 폴더로 되돌렸습니다")
             
             # 버튼 상태 업데이트
             self.update_all_button_states()
@@ -769,7 +731,6 @@ class MainImageViewer(QWidget):
         """모든 버튼 상태 업데이트"""
         try:
             self.undo_btn.setEnabled(len(self.move_history) > 0)
-            self.complete_curation_btn.setEnabled(len(self.pending_moves) > 0)
             
             # 현재 선택된 이미지가 있으면 해당 버튼도 업데이트
             current_folder = list(self.folder_tabs.keys())[self.tab_widget.currentIndex()]
@@ -800,10 +761,87 @@ class MainImageViewer(QWidget):
     def restore_default_mode_message(self):
         """기본 모드 메시지 복원"""
         try:
-            self.current_mode_label.setText("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어, Ctrl+Z:되돌리기)")
+            self.current_mode_label.setText("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어, Ctrl+Z:되돌리기, M:이동, Tab:탭이동)")
             self.current_mode_label.setStyleSheet("color: #6c757d; font-size: 11px; background-color: transparent;")
         except Exception as e:
             logger.error(f"기본 메시지 복원 오류: {str(e)}")
+    
+    def update_color_info_display(self, product_id: str):
+        """meta.json에서 색상 정보를 읽어와서 표시"""
+        try:
+            if not self.image_cache or not product_id:
+                self.color_info_label.setVisible(False)
+                return
+            
+            # 로컬 캐시에서 meta.json 읽기
+            meta_data = self.image_cache.get_product_meta_json(product_id)
+            
+            if not meta_data:
+                self.color_info_label.setVisible(False)
+                return
+            
+            # color_info 키 값 추출
+            color_info = meta_data.get('color_info')
+            
+            if not color_info:
+                self.color_info_label.setVisible(False)
+                return
+            
+            # 색상 정보가 문자열인지 리스트인지 확인
+            if isinstance(color_info, str):
+                if color_info == "one_color":
+                    display_text = "색상 정보: 단일 색상 (참고용)"
+                    bg_color = "#e8f5e8"
+                    border_color = "#4caf50"
+                    text_color = "#2e7d32"
+                else:
+                    display_text = f"색상 정보: {color_info} (참고용)"
+                    bg_color = "#f0f8ff"
+                    border_color = "#4682b4"
+                    text_color = "#2c3e50"
+            elif isinstance(color_info, list):
+                color_count = len(color_info)
+                colors_text = ", ".join(str(c) for c in color_info)
+                display_text = f"색상 정보: {color_count}개 색상 ({colors_text}) - 참고용"
+                
+                # 색상 개수에 따라 배경색 변경
+                if color_count == 1:
+                    bg_color = "#e8f5e8"
+                    border_color = "#4caf50"
+                    text_color = "#2e7d32"
+                elif color_count == 2:
+                    bg_color = "#fff3e0"
+                    border_color = "#ff9800"
+                    text_color = "#e65100"
+                else:
+                    bg_color = "#ffebee"
+                    border_color = "#f44336"
+                    text_color = "#c62828"
+            else:
+                display_text = f"색상 정보: {str(color_info)} (참고용)"
+                bg_color = "#f0f8ff"
+                border_color = "#4682b4"
+                text_color = "#2c3e50"
+            
+            # 스타일 적용
+            self.color_info_label.setText(display_text)
+            self.color_info_label.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {bg_color};
+                    border: 2px solid {border_color};
+                    color: {text_color};
+                    padding: 8px 12px;
+                    border-radius: 6px;
+                    font-weight: bold;
+                    font-size: 12px;
+                    margin: 0px 10px;
+                }}
+            """)
+            self.color_info_label.setVisible(True)
+            
+        except Exception as e:
+            logger.error(f"색상 정보 표시 오류: {e}")
+            self.color_info_label.setVisible(False)
     
     def setup_header(self, parent_layout):
         """헤더 설정"""
@@ -822,10 +860,26 @@ class MainImageViewer(QWidget):
         
         header_layout.addStretch()
         
-        # 이미지 정보
+        # 중앙 영역: 이미지 정보와 색상 정보 (수평 배치)
+        info_layout = QHBoxLayout()
+        
+        # 이미지 정보 (최소 폭 설정)
         self.image_info_label = QLabel("이미지를 선택해주세요")
         self.image_info_label.setStyleSheet("color: #495057; background-color: transparent;")
-        header_layout.addWidget(self.image_info_label)
+        self.image_info_label.setAlignment(Qt.AlignCenter)
+        self.image_info_label.setMinimumWidth(200)  # 최소 폭 설정
+        info_layout.addWidget(self.image_info_label, 1)  # stretch factor 1
+        
+        # 색상 정보 (기본적으로 숨김, 더 넓은 공간 할당)
+        self.color_info_label = QLabel("")
+        self.color_info_label.setVisible(False)
+        self.color_info_label.setWordWrap(True)
+        self.color_info_label.setAlignment(Qt.AlignCenter)
+        self.color_info_label.setMinimumWidth(300)  # 최소 폭 설정
+        self.color_info_label.setMaximumWidth(600)  # 최대 폭 제한
+        info_layout.addWidget(self.color_info_label, 2)  # stretch factor 2 (더 넓은 공간)
+        
+        header_layout.addLayout(info_layout)
         
         # 도움말 버튼 (meta.json 보기)
         self.help_button = QPushButton("📋 상품 정보")
@@ -1026,7 +1080,7 @@ class MainImageViewer(QWidget):
         mode_layout.addLayout(buttons_layout)
         
         # 현재 모드 표시 레이블
-        self.current_mode_label = QLabel("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어, Ctrl+Z:되돌리기)")
+        self.current_mode_label = QLabel("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어, Ctrl+Z:되돌리기, M:이동, Tab:탭이동)")
         self.current_mode_label.setStyleSheet("color: #6c757d; font-size: 11px; background-color: transparent;")
         mode_layout.addWidget(self.current_mode_label)
         
@@ -1058,7 +1112,7 @@ class MainImageViewer(QWidget):
         self.selection_mode = None
         for btn in self.mode_buttons.values():
             btn.setChecked(False)
-        self.current_mode_label.setText("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어, Ctrl+Z:되돌리기)")
+        self.current_mode_label.setText("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어, Ctrl+Z:되돌리기, M:이동, Tab:탭이동)")
         self.current_mode_label.setStyleSheet("color: #6c757d; font-size: 11px; background-color: transparent;")
     
     def setup_controls(self, parent_layout):
@@ -1070,7 +1124,7 @@ class MainImageViewer(QWidget):
         controls_layout.setSpacing(10)
         
         # 상단: 안내 메시지
-        info_label = QLabel("💡 Segment 이미지를 Text 폴더로 이동, 되돌리기(Ctrl+Z), 큐레이션 완료 기능을 사용하세요")
+        info_label = QLabel("💡 Segment 이미지(S3 및 로컬 생성)를 Text 폴더로 이동(M), 되돌리기(Ctrl+Z) 기능을 사용하세요")
         info_label.setStyleSheet("color: #6c757d; font-size: 11px; font-style: italic;")
         controls_layout.addWidget(info_label)
         
@@ -1079,8 +1133,8 @@ class MainImageViewer(QWidget):
         buttons_layout.setSpacing(10)
         
         # 텍스트 폴더로 이동 버튼
-        self.move_to_text_btn = QPushButton("📝 Text 폴더로 이동")
-        self.move_to_text_btn.setToolTip("선택된 Segment 이미지를 Text 폴더로 이동")
+        self.move_to_text_btn = QPushButton("📝 Text 폴더로 이동 (M)")
+        self.move_to_text_btn.setToolTip("선택된 Segment 이미지(S3 및 로컬 생성)를 Text 폴더로 이동 (단축키: M)")
         self.move_to_text_btn.setEnabled(False)
         self.move_to_text_btn.clicked.connect(self.move_image_to_text)
         self.move_to_text_btn.setStyleSheet("""
@@ -1150,31 +1204,6 @@ class MainImageViewer(QWidget):
         """)
         buttons_layout.addWidget(viewer_btn)
         
-        # 큐레이션 완료 버튼
-        self.complete_curation_btn = QPushButton("✅ 큐레이션 완료")
-        self.complete_curation_btn.setToolTip("변경사항을 S3에 반영하고 큐레이션을 완료합니다")
-        self.complete_curation_btn.setEnabled(False)
-        self.complete_curation_btn.clicked.connect(self.complete_curation)
-        self.complete_curation_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #007bff;
-                color: white;
-                border: none;
-                padding: 8px 20px;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #0056b3;
-            }
-            QPushButton:disabled {
-                background-color: #6c757d;
-                color: #adb5bd;
-            }
-        """)
-        buttons_layout.addWidget(self.complete_curation_btn)
-        
         controls_layout.addLayout(buttons_layout)
         parent_layout.addWidget(controls_frame)
     
@@ -1187,9 +1216,12 @@ class MainImageViewer(QWidget):
         self.aws_manager = aws_manager
     
     def set_representative_panel(self, representative_panel):
-        """대표 이미지 패널 참조 설정"""
+        """대표 이미지 패널 참조 설정
+            - MainImageViewer 에서 RepresentativePanel을 참조하기 위한 설정
+        """
         self.representative_panel = representative_panel
-    
+
+    #NOTE : 좌측 패널에서 클릭하여 얻은 s3, dyanomdb 정보 받아서 s3로 부터 이미지 캐쉬 디렉토리에 다운로드 한 뒤에 폴더 별로 정리 
     def load_product_images(self, images: List[Dict[str, Any]], product_data: Dict[str, Any]):
         """상품 이미지 로드
         args:
@@ -1202,8 +1234,13 @@ class MainImageViewer(QWidget):
         self.current_images = images
         self.current_product = product_data
         
-        # 도움말 버튼 활성화 (제품이 로드되면)
+        # 도움말 버튼 활성화 (제품이 로드되면) => meta.json 정보 확인가능한 버튼 
         self.help_button.setEnabled(True)
+        
+        # 색상 정보 업데이트 (meta.json에서 color_info 읽어오기)
+        product_id = product_data.get('product_id')
+        if product_id:
+            self.update_color_info_display(product_id)
         
         # 폴더별로 이미지 분류 (segment는 나중에 처리)
         for folder_name, tab_data in self.folder_tabs.items():
@@ -1215,17 +1252,55 @@ class MainImageViewer(QWidget):
             if folder_name != 'segment':
                 self.update_folder_display(folder_name)
         
-        # 기존 로컬 Segment 이미지들도 로드
+        # 기존 로컬 Segment 이미지들도 로드(사용자가 이미지 뷰어에서 새로운 segment 이미지를 생성한 경우)
         self.load_existing_segment_images()
         
         # Segment 폴더 디스플레이 업데이트 (S3 + 로컬 이미지 모두 포함하여 한 번만)
         self.update_folder_display('segment')
+        
+        # 기본 탭을 segment로 설정
+        self.set_default_tab_to_segment()
+    
+    def set_default_tab_to_segment(self):
+        """기본 탭을 segment로 설정"""
+        try:
+            # segment 탭의 인덱스 찾기
+            folder_names = list(self.folder_tabs.keys())
+            if 'segment' in folder_names:
+                segment_index = folder_names.index('segment')
+                self.tab_widget.setCurrentIndex(segment_index)
+                logger.info("기본 탭을 segment로 설정")
+            else:
+                logger.warning("segment 탭을 찾을 수 없습니다.")
+        except Exception as e:
+            logger.error(f"기본 탭 설정 오류: {str(e)}")
+    
+    def switch_to_next_tab(self):
+        """다음 탭으로 이동 (Tab키 처리)"""
+        try:
+            current_index = self.tab_widget.currentIndex()
+            total_tabs = self.tab_widget.count()
+            
+            if total_tabs <= 1:
+                return
+            
+            # 다음 탭 인덱스 계산 (마지막 탭에서는 첫 번째 탭으로)
+            next_index = (current_index + 1) % total_tabs
+            self.tab_widget.setCurrentIndex(next_index)
+            
+            # 현재 탭 이름 로그
+            folder_names = list(self.folder_tabs.keys())
+            if next_index < len(folder_names):
+                logger.info(f"탭 이동: {folder_names[next_index]}")
+                
+        except Exception as e:
+            logger.error(f"탭 이동 오류: {str(e)}")
     
     def update_folder_display(self, folder_name: str):
         """
-        폴더 디스플레이 업데이트
+        폴더 디스플레이 업데이트 각 폴더명 별로 GridImageWidget 생성 => GridImageWidget 초기화시 ImageCache 클래스의 .get_image 호출) 
         args: 
-            folder_name(str) : 폴더명 문자열 [detail, segment, summary, text] 중 1개
+            folder_name(str) : 폴더명 문자열 [detail, segment, summary, text] 중 1개 (중앙 패널의 탭 영역의 문자열)
         return:
             None
         """
@@ -1239,6 +1314,12 @@ class MainImageViewer(QWidget):
                 for widget in tab_data['image_widgets']:
                     if hasattr(widget, '_is_destroyed'):
                         widget._is_destroyed = True
+                        # 시그널 연결 해제
+                        try:
+                            widget.clicked.disconnect()
+                            widget.double_clicked.disconnect()
+                        except:
+                            pass  # 이미 연결 해제된 경우 무시
             
             self.clear_grid_layout(grid_layout)
             tab_data['image_widgets'] = []
@@ -1289,6 +1370,12 @@ class MainImageViewer(QWidget):
                     # GridImageWidget인 경우 안전하게 정리
                     if isinstance(widget, GridImageWidget):
                         widget._is_destroyed = True  # 삭제 상태 마킹
+                        # 시그널 연결 해제
+                        try:
+                            widget.clicked.disconnect()
+                            widget.double_clicked.disconnect()
+                        except:
+                            pass  # 이미 연결 해제된 경우 무시
                     widget.deleteLater()
                 elif child.spacerItem():
                     # 스페이서 아이템 제거
@@ -1406,7 +1493,11 @@ class MainImageViewer(QWidget):
             logger.error(f"Segment 이미지 추가 오류: {str(e)}")
 
     def load_existing_segment_images(self):
-        """기존 로컬 Segment 이미지들을 로드"""
+        """
+            기존 로컬 Segment 이미지들을 로드
+            - 사용자가 이미지 뷰어에서 새로운 segment 이미지를 생성한 경우 캐쉬 디렉토리 / images / segments 디렉토리에 이미지 저장됨
+            - 만약 해당 폴더내에 이미지가 존재하는 경우 
+        """
         try:
             if not self.current_product:
                 return
@@ -1538,71 +1629,7 @@ class MainImageViewer(QWidget):
             return tab_data.get('selected_image_data')
         return None
     
-    def complete_curation(self):
-        """큐레이션 완료 - S3에 변경사항 반영"""
-        try:
-            if not self.pending_moves:
-                self.show_status_message("❌ 반영할 변경사항이 없습니다", error=True)
-                return
-            
-            if not self.aws_manager:
-                self.show_status_message("❌ AWS Manager가 설정되지 않았습니다", error=True)
-                return
-            
-            # 버튼 비활성화
-            self.complete_curation_btn.setEnabled(False)
-            self.complete_curation_btn.setText("🔄 처리 중...")
-            
-            # 워커 쓰레드로 S3 이동 작업 수행
-            self.curation_worker = CurationWorker(self.aws_manager, self.pending_moves.copy())
-            self.curation_worker.progress_updated.connect(self.on_curation_progress)
-            self.curation_worker.completed.connect(self.on_curation_completed)
-            self.curation_worker.start()
-            
-        except Exception as e:
-            logger.error(f"큐레이션 완료 오류: {str(e)}")
-            self.show_status_message(f"❌ 큐레이션 실패: {str(e)}", error=True)
-            self.restore_curation_button()
-    
-    def on_curation_progress(self, message: str, progress: int):
-        """큐레이션 진행 상황 업데이트"""
-        try:
-            self.complete_curation_btn.setText(f"🔄 {message}")
-        except Exception as e:
-            logger.error(f"진행 상황 업데이트 오류: {str(e)}")
-    
-    def on_curation_completed(self, success: bool, message: str):
-        """큐레이션 완료 처리"""
-        try:
-            if success:
-                # 성공 시 히스토리와 대기 목록 초기화
-                self.pending_moves.clear()
-                self.move_history.clear()
-                self.show_status_message(message)
-            else:
-                # 실패 시 에러 메시지
-                self.show_status_message(message, error=True)
-            
-            # 버튼 복원
-            self.restore_curation_button()
-            
-            # 버튼 상태 업데이트
-            self.update_all_button_states()
-            
-        finally:
-            # 워커 정리
-            if self.curation_worker:
-                self.curation_worker.quit()
-                self.curation_worker.wait()
-                self.curation_worker = None
-    
-    def restore_curation_button(self):
-        """큐레이션 버튼 원래 상태로 복원"""
-        try:
-            self.complete_curation_btn.setText("✅ 큐레이션 완료")
-            self.complete_curation_btn.setEnabled(len(self.pending_moves) > 0)
-        except Exception as e:
-            logger.error(f"큐레이션 버튼 복원 오류: {str(e)}")
+
     
     def open_image_viewer_button_clicked(self):
         """이미지 뷰어 버튼 클릭 처리"""
@@ -1614,38 +1641,36 @@ class MainImageViewer(QWidget):
             self.show_status_message("❌ 먼저 이미지를 선택해주세요", error=True)
     
     def show_meta_json(self):
-        """meta.json 다운로드 및 팝업 표시"""
+        """로컬 캐시에서 meta.json 읽어서 팝업 표시"""
         if not self.current_product:
             logger.warning("현재 제품 정보가 없습니다.")
             return
         
-        if not self.aws_manager:
-            logger.error("AWS Manager가 설정되지 않았습니다.")
+        if not self.image_cache:
+            logger.error("이미지 캐시가 설정되지 않았습니다.")
             return
         
-        # 제품 정보에서 필요한 데이터 추출
-        main_category = self.current_product.get('main_category')
-        sub_category = self.current_product.get('sub_category')
         product_id = self.current_product.get('product_id')
-        
-        if not all([main_category, sub_category, product_id]):
-            logger.error("제품 정보가 불완전합니다.")
+        if not product_id:
+            logger.error("제품 ID가 없습니다.")
             return
         
-        # 버튼 비활성화 (다운로드 중)
+        # 버튼 임시 비활성화
         self.help_button.setEnabled(False)
         self.help_button.setText("📋 로딩중...")
         
-        # 워커 쓰레드로 meta.json 다운로드
-        self.meta_json_worker = MetaJsonWorker(
-            self.aws_manager, 
-            main_category, 
-            sub_category, 
-            product_id
-        )
-        self.meta_json_worker.data_loaded.connect(self.on_meta_json_loaded)
-        self.meta_json_worker.error_occurred.connect(self.on_meta_json_error)
-        self.meta_json_worker.start()
+        try:
+            # 로컬 캐시에서 meta.json 읽기
+            meta_data = self.image_cache.get_product_meta_json(product_id)
+            
+            if meta_data:
+                self.on_meta_json_loaded(meta_data)
+            else:
+                self.on_meta_json_error("캐시된 meta.json 파일을 찾을 수 없습니다.")
+                
+        except Exception as e:
+            logger.error(f"meta.json 읽기 오류: {e}")
+            self.on_meta_json_error(f"meta.json 읽기 오류: {str(e)}")
     
     def on_meta_json_loaded(self, meta_data):
         """meta.json 로드 완료 처리"""
@@ -1659,34 +1684,21 @@ class MainImageViewer(QWidget):
             # 버튼 복원
             self.help_button.setEnabled(True)
             self.help_button.setText("📋 상품 정보")
-            
-            # 워커 정리
-            if self.meta_json_worker:
-                self.meta_json_worker.quit()
-                self.meta_json_worker.wait()
-                self.meta_json_worker = None
     
     def on_meta_json_error(self, error_message):
         """meta.json 로드 오류 처리"""
         logger.error(f"meta.json 로드 오류: {error_message}")
         
-        # 간단한 오류 메시지 표시 (실제로는 QMessageBox 등을 사용할 수 있음)
+        # 간단한 오류 메시지 표시
         self.current_mode_label.setText(f"❌ 오류: {error_message}")
         self.current_mode_label.setStyleSheet("color: #dc3545; font-size: 11px; background-color: transparent; font-weight: bold;")
         
         # 3초 후 원래 메시지로 복원
-        QTimer.singleShot(3000, lambda: self.current_mode_label.setText("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어)") or 
-                         self.current_mode_label.setStyleSheet("color: #6c757d; font-size: 11px; background-color: transparent;"))
+        QTimer.singleShot(3000, self.restore_default_mode_message)
         
         # 버튼 복원
         self.help_button.setEnabled(True)
         self.help_button.setText("📋 상품 정보")
-        
-        # 워커 정리
-        if self.meta_json_worker:
-            self.meta_json_worker.quit()
-            self.meta_json_worker.wait()
-            self.meta_json_worker = None
 
     def clear(self):
         """뷰어 초기화"""
@@ -1701,15 +1713,13 @@ class MainImageViewer(QWidget):
             # 도움말 버튼 비활성화
             self.help_button.setEnabled(False)
             
+            # 색상 정보 숨김
+            self.color_info_label.setVisible(False)
+            
             # 선택 모드 초기화
             self.clear_selection_mode()
             
-            # 워커 쓰레드 정리
-            if self.meta_json_worker:
-                self.meta_json_worker.quit()
-                self.meta_json_worker.wait()
-                self.meta_json_worker = None
-            
+            # 워커 쓰레드 정리 (curation_worker만)
             if self.curation_worker:
                 self.curation_worker.quit()
                 self.curation_worker.wait()
@@ -1733,8 +1743,6 @@ class MainImageViewer(QWidget):
             # 모든 버튼 상태 초기화
             self.move_to_text_btn.setEnabled(False)
             self.undo_btn.setEnabled(False)
-            self.complete_curation_btn.setEnabled(False)
-            self.restore_curation_button()
             
         except Exception as e:
             logger.error(f"뷰어 초기화 오류: {str(e)}")
@@ -1764,10 +1772,28 @@ class MainImageViewer(QWidget):
     def keyPressEvent(self, event: QKeyEvent):
         """키보드 이벤트 처리"""
         try:
+            # Tab: 다음 탭으로 이동
+            if event.key() == Qt.Key_Tab:
+                self.switch_to_next_tab()
+                event.accept()
+                return
+            
             # Ctrl+Z: 되돌리기
-            if event.key() == Qt.Key_Z and event.modifiers() == Qt.ControlModifier:
+            elif event.key() == Qt.Key_Z and event.modifiers() == Qt.ControlModifier:
                 if self.undo_btn.isEnabled():
                     self.undo_last_move()
+                    event.accept()
+                    return
+            
+            # M/m: Text 폴더로 이동 (segment 폴더에서만)
+            elif event.key() == Qt.Key_M:
+                if self.move_to_text_btn.isEnabled():
+                    self.move_image_to_text()
+                    event.accept()
+                    return
+                else:
+                    # 버튼이 비활성화된 경우 안내 메시지
+                    self.show_status_message("❌ Segment 폴더의 이미지를 선택해주세요", error=True)
                     event.accept()
                     return
             
@@ -1805,4 +1831,13 @@ class MainImageViewer(QWidget):
             logger.error(f"키보드 이벤트 처리 오류: {str(e)}")
         
         # 처리되지 않은 키는 부모 클래스로 전달
-        super().keyPressEvent(event) 
+        super().keyPressEvent(event)
+
+    def get_pending_moves(self):
+        """대기 중인 S3 이동 목록 반환"""
+        return self.pending_moves.copy()
+    
+    def clear_pending_moves(self):
+        """대기 중인 S3 이동 목록 초기화"""
+        self.pending_moves.clear()
+        self.move_history.clear()

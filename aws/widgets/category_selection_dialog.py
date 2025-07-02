@@ -9,12 +9,15 @@ from typing import Optional, Tuple
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                                QComboBox, QPushButton, QGroupBox, QMessageBox,
                                QTextEdit, QSplitter)
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QFont
 
 
 class CategorySelectionDialog(QDialog):
-    """카테고리 선택 다이얼로그"""
+    """카테고리 선택 다이얼로그
+        - category_selected 시그널: 카테고리 선택 완료 시 데이터 emit => (str, int) : (main_category, sub_category)
+        - gui_main.py 의 MainWindow 클래스의 on_category_selected 함수에게 데이터 전달 
+    """
     
     category_selected = Signal(str, int)  # main_category, sub_category
     
@@ -143,7 +146,10 @@ class CategorySelectionDialog(QDialog):
         parent_layout.addLayout(button_layout)
     
     def load_categories(self):
-        """카테고리 정보 로드"""
+        """
+        카테고리 정보 로드
+            - 카테고리 정보는 DynamoDB에서 조회(맨 처음 다이얼로그 실행 시, 새로고침 버튼 클릭 시)
+        """
         try:
             # DynamoDB에서 카테고리 메타데이터 조회
             metadata = self.aws_manager.get_category_metadata()
@@ -177,7 +183,8 @@ class CategorySelectionDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "오류", f"카테고리 정보 로드 중 오류가 발생했습니다:\n{str(e)}")
     
-    def on_main_category_changed(self, main_category_text):
+    @Slot(str)
+    def on_main_category_changed(self, main_category_text:str):
         """메인 카테고리 변경 시 처리"""
         self.sub_category_combo.clear()
         self.sub_category_combo.addItem("-- 선택하세요 --", None)
@@ -197,7 +204,8 @@ class CategorySelectionDialog(QDialog):
         self.update_selection_info()
         self.check_selection_complete()
     
-    def on_sub_category_changed(self, sub_category_text):
+    @Slot(str)
+    def on_sub_category_changed(self, sub_category_text:str):
         """서브 카테고리 변경 시 처리"""
         self.selected_sub_category = self.sub_category_combo.currentData()
         self.update_selection_info()
@@ -214,12 +222,12 @@ class CategorySelectionDialog(QDialog):
                 ).get(str(self.selected_sub_category), 0)
             
             info_text = f"""
-선택된 카테고리:
-• 메인 카테고리: {self.selected_main_category}
-• 서브 카테고리: {self.selected_sub_category}
-• 제품 수: {product_count:,}개
+                선택된 카테고리:
+                • 메인 카테고리: {self.selected_main_category}
+                • 서브 카테고리: {self.selected_sub_category}
+                • 제품 수: {product_count:,}개
 
-이 카테고리로 큐레이션 작업을 시작하겠습니다.
+                이 카테고리로 큐레이션 작업을 시작하겠습니다.
             """.strip()
             
             self.selection_info_label.setText(info_text)
@@ -267,8 +275,9 @@ class CategorySelectionDialog(QDialog):
         is_complete = bool(self.selected_main_category and self.selected_sub_category)
         self.ok_button.setEnabled(is_complete)
     
+    @Slot()
     def accept_selection(self):
-        """선택 확인"""
+        """맨 마지막 버튼 클릭시 동작하는 slot 함수"""
         if self.selected_main_category and self.selected_sub_category:
             # 선택 완료 시그널 발생
             self.category_selected.emit(self.selected_main_category, self.selected_sub_category)

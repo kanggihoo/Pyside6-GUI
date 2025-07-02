@@ -20,7 +20,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QAction, QIcon, QKeyEvent
 
 from aws_manager import AWSManager
-from image_cache import ImageCache
+from image_cache import ProductImageCache
 from widgets.main_image_viewer import MainImageViewer
 from widgets.representative_panel import RepresentativePanel
 from widgets.product_list_widget import ProductListWidget
@@ -35,7 +35,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.aws_manager = None
-        self.image_cache = ImageCache()
+        self.image_cache = ProductImageCache()  # 새로운 ProductImageCache 사용
         self.current_page = 0
         self.last_evaluated_key = None
         self.selected_main_category = None
@@ -45,11 +45,20 @@ class MainWindow(QMainWindow):
         self.initialize_aws()
     
     def setup_ui(self):
-        """UI 설정"""
-        self.setWindowTitle("AI 데이터셋 큐레이션 도구")
-        self.setGeometry(100, 100, 1600, 900)
+        """
+        UI 구성 요소들을 설정합니다.
+        스플리터를 사용하여 상품 목록, 메인 이미지 뷰어, 대표 이미지 패널을 배치합니다.
+        메뉴바, 중앙 위젯, 상태바를 포함한 전체 UI 레이아웃을 구성합니다.
         
-        # 메뉴바 설정
+        레이아웃 구조:
+        - 왼쪽: ProductListWidget (상품 목록) -> product_list_widget.py 
+        - 중앙: MainImageViewer (이미지 뷰어, 가장 큰 영역) -> main_image_viewer.py 
+        - 오른쪽: RepresentativePanel (대표 이미지 선정) -> representative_panel.py 
+        """
+        self.setWindowTitle("AI 데이터셋 큐레이션 도구")
+        self.setGeometry(100, 100, 1600, 900) # (x,y , width, height)
+        
+        # 메뉴바 설정(앱 상단 메뉴바 설정)
         self.setup_menu_bar()
         
         # 중앙 위젯 설정
@@ -76,22 +85,32 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.representative_panel)
         
         # 패널 간 참조 설정
+
         self.main_image_viewer.set_representative_panel(self.representative_panel)
+        # RepresentativePanel에 MainImageViewer 참조 설정
+        self.representative_panel.set_main_image_viewer(self.main_image_viewer)
         
-        # 스플리터 비율 설정 - 중앙 패널 확대
+        # 스플리터 비율 설정 - (왼쪽 , 중앙 , 오른쪽 패널 width 비율)
         splitter.setSizes([350, 900, 350])
         
         # 상태바 설정
         self.setup_status_bar()
     
     def setup_menu_bar(self):
-        """메뉴바 설정"""
+        """
+        메뉴바와 액션들을 설정합니다.
+        파일 메뉴와 도구 메뉴를 포함하며, 각각 단축키도 설정합니다.
+        
+        메뉴 구성:
+        - 파일 메뉴: 카테고리 변경(Ctrl+C), 새로고침(F5), 종료(Ctrl+Q)
+        - 도구 메뉴: 통계 보기, 캐시 정리
+        """
         menubar = self.menuBar()
         
         # 파일 메뉴
         file_menu = menubar.addMenu('파일(&F)')
         
-        # 카테고리 변경 액션
+        # 카테고리 변경 액션(상단 메뉴 바에서 카테고리 변경 누른경우)
         change_category_action = QAction('카테고리 변경(&C)', self)
         change_category_action.setShortcut('Ctrl+C')
         change_category_action.triggered.connect(self.show_category_selection)
@@ -127,7 +146,14 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(clear_cache_action)
     
     def setup_status_bar(self):
-        """상태바 설정"""
+        """
+        상태바와 그 구성 요소들을 설정합니다. 연결 상태, 카테고리 정보, 진행률 표시기, 작업 정보를 포함합니다.
+        상태바 구성 요소:
+        - connection_label: AWS 연결 상태 표시
+        - category_label: 현재 선택된 카테고리 정보
+        - progress_bar: 작업 진행률 (필요시에만 표시)
+        - work_info_label: 현재 작업 정보
+        """
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         
@@ -150,116 +176,121 @@ class MainWindow(QMainWindow):
         self.work_info_label = QLabel("준비 완료")
         self.status_bar.addPermanentWidget(self.work_info_label)
     
-    #CHECK : 중요 함수(시그널-슬롯 연결 설정) 
+    #RECHECK : 중요 함수(시그널-슬롯 연결 설정) 
     def setup_connections(self):
         """
-        시그널-슬롯 연결 설정
-        self.product_list_widget : ProductListWidget 클래스 인스턴스 
-           - product_selected(시그널): ProductListWidget 에 정의된 커스텀 Signal(dynamoDB에서 조회한 상품 정보가 딕셔너리 형태로 저장)  
-        - representative_selected : 메인 이미지 뷰어에서 대표 이미지 선정 시
-        - curation_completed : 큐레이션 완료 시 상품 목록 업데이트
-        - page_changed : 페이지 변경 시 상품 목록 로드
+        시그널-슬롯 연결을 설정합니다.
+        상품 선택, 대표 이미지 선정, 큐레이션 완료, 페이지 변경 등의 이벤트를 연결합니다.
+        
+        연결되는 시그널-슬롯:
+        - product_list_widget.product_selected → on_product_selected: 상품 선택 시
+        - representative_panel.curation_completed → on_curation_completed: 큐레이션 완료 시
+        - product_list_widget.page_changed → load_products_page: 페이지 변경 시
+        - product_list_widget.page_images_preloaded → on_page_images_preloaded: 페이지 이미지 프리로딩 완료 시
         """
         # 상품 선택 시 해당 상품의 데이터 방출 및 전달하는(시그널-슬롯 연결)
-        self.product_list_widget.product_selected.connect(
-            self.on_product_selected
-        )
+        self.product_list_widget.product_selected.connect(self.on_product_selected)
         
-        #TODO : 여기 부터 다시 코드 확인 하기 
         # 메인 이미지 뷰어의 Signal(representative_selected) 시그널이 방출되면 우측 패널의 메서드(add_representative_image) 동작 , (대표이미지(dict) , 타입(str)) 전달 
         self.main_image_viewer.representative_selected.connect(
-            self.representative_panel.add_representative_image
-        )
+            self.representative_panel.add_representative_image)
         
-        # 큐레이션 완료 시 상품 목록 업데이트
-        self.representative_panel.curation_completed.connect(
-            self.on_curation_completed
-        )
+        # 큐레이션 완료 시(우측 패널에서의 큐레이션 완료 버튼이 눌리면, 완료된 상품 id 전달)
+        self.representative_panel.curation_completed.connect(self.on_curation_completed)
         
         # 페이지 변경 시
-        self.product_list_widget.page_changed.connect(
-            self.load_products_page
-        )
-    
-    def on_product_selected(self, product_data:dict):
+        self.product_list_widget.page_changed.connect(self.load_products_page)
+        
+        # 페이지 이미지 프리로딩 완료 시
+        self.product_list_widget.page_images_preloaded.connect(self.on_page_images_preloaded)
+
+    def on_product_selected(self, product_data: dict):
         """
         args:
             product_data(dict) : dynamoDB에서 조회한 상품 개별 딕셔너리 정보(좌측 패널 위젯에서 특정 상품 클릭시 데이터 전달받음) \n
                                  ProductListWidget 클래스에서 정의한 커스텀 Signal이 전송하는 데이터 
-        return:
-            None
         """
-        if self.selected_main_category: # 처음 사용자가 선택한 카테고리 정보 추가 
-            # product_data에 main_category 정보 추가
-            product_data['main_category'] = self.selected_main_category
-        
         # 대표 이미지 패널에 상품 정보 로드
         self.representative_panel.load_product(product_data)
         
-        # s3로 부터 이미지를 로드하고 메인 이미지 뷰어에 전달
-        self.load_product_images(product_data)
+        # 로컬 캐시에서 이미지를 로드하고 메인 이미지 뷰어에 전달
+        self.load_product_images_from_cache(product_data)
     
-    def load_product_images(self, product_data):
+    def load_product_images_from_cache(self, product_data):
         """
-        dynamoDB에서 조회한 정보를 바탕으로 폴더 정보 확인 후 s3에서 다운가능한 url 정보 생성 후 메인 이미지 뷰어의 .load_product_images 함수에게 전달
-        args:
-            product_data(dict) : dynamoDB에서 조회한 상품 개별 딕셔너리 정보(좌측 패널 위젯에서 특정 상품 클릭시 데이터 전달받음) \n
-                                 ProductListWidget 클래스에서 정의한 커스텀 Signal이 전송하는 데이터 
-        return:
-            None
-        """
-        if not self.aws_manager:
-            return
+        로컬 캐시에서 제품 이미지를 로드하여 메인 이미지 뷰어에 전달
         
+        args:
+            product_data(dict) : dynamoDB에서 조회한 상품 개별 딕셔너리 정보
+        """
         try:
-            main_category = product_data.get('main_category', self.selected_main_category)
-            sub_category = self.selected_sub_category
-            product_id = product_data.get('product_id')
+            product_id = product_data['product_id']
             
-            if not all([main_category, sub_category, product_id]):
+            logger.info(f"캐시에서 이미지 로드 시작: {product_id}")
+            
+            # 캐시에서 제품 이미지 정보 조회
+            cached_images = self.image_cache.get_product_images(product_id)
+            
+            if not cached_images:
+                logger.warning(f"캐시에 이미지가 없습니다: {product_id}")
+                # 빈 이미지로 메인 뷰어 초기화
+                self.main_image_viewer.load_product_images([], product_data)
                 return
             
-            # 모든 폴더의 이미지 URL 가져오기
-            folders = ['detail', 'segment', 'summary', 'text']
+            # 캐시된 이미지 정보를 메인 이미지 뷰어 형식으로 변환
             all_images = []
+            for folder, images in cached_images.items():
+                for image_info in images:
+                    # file:// URL 형식으로 변환
+                    file_url = f"file://{image_info['path']}"
+                    
+                    all_images.append({
+                        'url': file_url,
+                        'folder': folder,
+                        'filename': image_info['filename'],
+                        'cached': True  # 캐시된 이미지임을 표시
+                    })
             
-            for folder in folders:
-                images = self.aws_manager.get_s3_urls(
-                    main_category, sub_category, product_id, folder
-                )
-                all_images.extend(images)
+            logger.info(f"캐시에서 {len(all_images)}개 이미지 로드: {product_id}")
             
             # 메인 이미지 뷰어에 이미지 로드
-            # logger.info(f"s3에서 다운받을 수 있는 url 정보:")
-            # for img in all_images:
-            #     logger.info(f"url: {img['url']}, folder: {img['folder']}, filename: {img['filename']}")
             self.main_image_viewer.load_product_images(all_images, product_data)
             
         except Exception as e:
-            logger.error(f"상품 이미지 로드 중 오류: {e}")
-            QMessageBox.warning(self, "이미지 로드 오류", f"이미지를 로드하는 중 오류가 발생했습니다:\n{str(e)}")
+            logger.error(f"캐시에서 이미지 로드 중 오류: {e}")
+            # 빈 이미지로 메인 뷰어 초기화 (폴백 방식 제거)
+            self.main_image_viewer.load_product_images([], product_data)
+    
+
     
     def initialize_aws(self):
         """AWS 연결 초기화"""
         try:
+            # AWS Manager 초기화
             self.aws_manager = AWSManager()
             
-            # AWS 연결 테스트
-            connection_test = self.aws_manager.test_connection()
+            # 연결 테스트
+            connection_result = self.aws_manager.test_connection()
             
-            if connection_test.get('s3', False) and connection_test.get('dynamodb', False):
-                self.connection_label.setText("연결 상태: 정상")
+            if connection_result.get('s3', False) and connection_result.get('dynamodb', False):
+                self.connection_label.setText("연결 상태: ✅ 정상")
                 self.connection_label.setStyleSheet("color: #28a745; background-color: transparent; font-weight: bold;")
                 
-                # AWS 매니저를 위젯들에 설정
-                self.product_list_widget.set_aws_manager(self.aws_manager)
+                # 각 위젯에 AWS Manager 설정
+                self.main_image_viewer.set_aws_manager(self.aws_manager)
                 self.main_image_viewer.set_image_cache(self.image_cache)
-                self.main_image_viewer.set_aws_manager(self.aws_manager)  # AWS Manager 설정 추가
                 self.representative_panel.set_aws_manager(self.aws_manager)
                 self.representative_panel.set_image_cache(self.image_cache)
+                self.representative_panel.set_main_image_viewer(self.main_image_viewer)
                 
-                # 카테고리 선택 다이얼로그 표시
-                self.show_category_selection()
+                # ProductListWidget에 AWS Manager와 이미지 캐시 설정
+                self.product_list_widget.set_aws_manager(self.aws_manager)
+                self.product_list_widget.set_image_cache(self.image_cache)
+                
+                logger.info("AWS 연결 성공")
+                
+                # 카테고리 선택 다이얼로그 표시(0.5초 후 카테고리 선택창 표시)
+                QTimer.singleShot(500, self.show_category_selection)
                 
             else:
                 self.connection_label.setText("연결 상태: 오류")
@@ -281,13 +312,7 @@ class MainWindow(QMainWindow):
         dialog = CategorySelectionDialog(self.aws_manager, self)
         dialog.category_selected.connect(self.on_category_selected)
         
-        if dialog.exec() == QDialog.Accepted:
-            category_info = dialog.get_selected_category()
-            if category_info:
-                self.selected_main_category, self.selected_sub_category = category_info
-                self.update_category_display()
-                self.load_initial_data()
-        else:
+        if dialog.exec() != QDialog.Accepted:
             # 카테고리 선택이 취소된 경우 종료하거나 기본 동작 설정
             if self.selected_main_category is None:
                 # 처음 실행 시 카테고리를 선택하지 않으면 앱 종료
@@ -299,6 +324,15 @@ class MainWindow(QMainWindow):
         self.selected_main_category = main_category
         self.selected_sub_category = sub_category
         self.update_category_display()
+        
+        # ProductListWidget에 카테고리 정보 설정(product_list_widget 인스턴스의 맴버 변수 설정(self.current_main_category, self.current_sub_category))
+        self.product_list_widget.set_category_info(main_category, sub_category)
+        
+        # 상태 필터를 PENDING으로 설정 (진행해야 하는 작업들 우선 표시)
+        self.product_list_widget.set_status_filter("PENDING")
+        
+        # 초기 데이터 로드
+        self.load_initial_data()
     
     def update_category_display(self):
         """선택된 카테고리 정보 업데이트"""
@@ -320,8 +354,8 @@ class MainWindow(QMainWindow):
             return
         
         self.work_info_label.setText("데이터 로딩 중...")
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)  # 무한 진행바
+        # self.progress_bar.setVisible(True)
+        # self.progress_bar.setRange(0, 0)  # 무한 진행바
         
         # 첫 페이지 로드
         self.load_products_page(0)
@@ -353,15 +387,19 @@ class MainWindow(QMainWindow):
         self.main_image_viewer.clear()
         self.representative_panel.clear()
     
+    #RECHECK : 큐레이션 완료시 처리 구현 부 
     def on_curation_completed(self, product_id: str):
-        """큐레이션 완료 처리"""
+        """큐레이션 완료 처리
+        args:
+            product_id(str) : 큐레이션 완료된 상품 id 
+        """
         self.work_info_label.setText(f"상품 {product_id} 큐레이션 완료")
         
         # 상품 목록에서 상태 업데이트
         self.product_list_widget.update_product_status(product_id, "COMPLETED")
         
         # 3초 후 상태 메시지 리셋
-        QTimer.singleShot(3000, lambda: self.work_info_label.setText("준비 완료"))
+        # QTimer.singleShot(3000, lambda: self.work_info_label.setText("준비 완료"))
     
     def show_statistics(self):
         """통계 정보 표시"""
@@ -408,15 +446,22 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "통계 오류", f"통계를 가져오는 중 오류가 발생했습니다:\n{str(e)}")
     
+    def on_page_images_preloaded(self):
+        """페이지 이미지 프리로딩 완료 처리"""
+        self.work_info_label.setText("페이지 이미지 로딩 완료")
+        # 3초 후 상태 메시지 리셋
+        QTimer.singleShot(3000, lambda: self.work_info_label.setText("준비 완료"))
+    
     def clear_cache(self):
         """이미지 캐시 정리"""
-        self.image_cache.clear_cache()
+        self.image_cache.clear_all_cache()
         self.work_info_label.setText("캐시가 정리되었습니다.")
         QTimer.singleShot(3000, lambda: self.work_info_label.setText("준비 완료"))
     
     def keyPressEvent(self, event: QKeyEvent):
         """전역 키보드 단축키 처리"""
         key = event.key()
+        modifiers = event.modifiers()
         
         # 현재 포커스된 위젯이 텍스트 입력 위젯인 경우 단축키 무시
         focused_widget = QApplication.focusWidget()
@@ -424,33 +469,76 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(event)
             return
         
-        # 메인 이미지 뷰어가 있고, 대표 이미지 기능이 활성화된 경우에만 처리
-        if hasattr(self, 'main_image_viewer') and self.main_image_viewer:
-            # 1,2,3,4: 대표 이미지 모드 선택
-            if key == Qt.Key_1:
-                self.main_image_viewer.activate_mode_button('model_wearing')
-                event.accept()
-                return
-            elif key == Qt.Key_2:
-                self.main_image_viewer.activate_mode_button('front_cutout')
-                event.accept()
-                return
-            elif key == Qt.Key_3:
-                self.main_image_viewer.activate_mode_button('back_cutout')
-                event.accept()
-                return
-            elif key == Qt.Key_4:
-                self.main_image_viewer.activate_mode_button('color_variant')
-                event.accept()
-                return
+        try:
+            # Tab: 탭 이동 (MainImageViewer)
+            if key == Qt.Key_Tab:
+                if hasattr(self, 'main_image_viewer') and self.main_image_viewer:
+                    self.main_image_viewer.keyPressEvent(event)
+                    if event.isAccepted():
+                        return
+            
+            # Ctrl+Z: 되돌리기 (MainImageViewer)
+            elif key == Qt.Key_Z and modifiers == Qt.ControlModifier:
+                if hasattr(self, 'main_image_viewer') and self.main_image_viewer:
+                    self.main_image_viewer.keyPressEvent(event)
+                    if event.isAccepted():
+                        return
+            
+            # M/m: Text 폴더로 이동 (MainImageViewer)
+            elif key == Qt.Key_M:
+                if hasattr(self, 'main_image_viewer') and self.main_image_viewer:
+                    self.main_image_viewer.keyPressEvent(event)
+                    if event.isAccepted():
+                        return
+            
+            # Space: 큐레이션 완료 (RepresentativePanel)
+            elif key == Qt.Key_Space:
+                if hasattr(self, 'representative_panel') and self.representative_panel:
+                    self.representative_panel.keyPressEvent(event)
+                    if event.isAccepted():
+                        return
+            
+            # 1,2,3,4: 대표 이미지 모드 선택 (MainImageViewer)
+            elif key in (Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4):
+                if hasattr(self, 'main_image_viewer') and self.main_image_viewer:
+                    self.main_image_viewer.keyPressEvent(event)
+                    if event.isAccepted():
+                        return
+            
+            # ESC: 선택 모드 취소 (MainImageViewer)
             elif key == Qt.Key_Escape:
-                self.main_image_viewer.activate_mode_button('clear_mode')
-                event.accept()
-                return
+                if hasattr(self, 'main_image_viewer') and self.main_image_viewer:
+                    self.main_image_viewer.keyPressEvent(event)
+                    if event.isAccepted():
+                        return
+            
+            # V: 이미지 뷰어 열기 (MainImageViewer)
             elif key == Qt.Key_V:
-                self.main_image_viewer.activate_mode_button('image_viewer')
+                if hasattr(self, 'main_image_viewer') and self.main_image_viewer:
+                    self.main_image_viewer.keyPressEvent(event)
+                    if event.isAccepted():
+                        return
+            
+            # F5: 새로고침
+            elif key == Qt.Key_F5:
+                self.refresh_data()
                 event.accept()
                 return
+            
+            # Ctrl+C: 카테고리 변경
+            elif key == Qt.Key_C and modifiers == Qt.ControlModifier:
+                self.show_category_selection()
+                event.accept()
+                return
+            
+            # Ctrl+Q: 종료
+            elif key == Qt.Key_Q and modifiers == Qt.ControlModifier:
+                self.close()
+                event.accept()
+                return
+                
+        except Exception as e:
+            logger.error(f"전역 키보드 이벤트 처리 오류: {str(e)}")
         
         # 처리되지 않은 키는 부모 클래스로 전달
         super().keyPressEvent(event)
@@ -459,7 +547,7 @@ class MainWindow(QMainWindow):
         """애플리케이션 종료 시 정리 작업"""
         # 캐시 정리
         if hasattr(self, 'image_cache'):
-            self.image_cache.clear_cache()
+            self.image_cache.cleanup()
         
         # 스레드 정리
         if hasattr(self, 'product_list_widget'):

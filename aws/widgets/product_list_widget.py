@@ -17,9 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 class ProductLoadThread(QThread):
-    """상품 로드 스레드"""
+    """
+    상품 로드 스레드(dynamoDB에서 상품 데이터를 페이지네이션으로 로드)
+    """
     
-    products_loaded = Signal(list, dict)  # products, last_evaluated_key
+    products_loaded = Signal(list, dict)  # dynamoDB에서 조회한 상품 데이터, 마지막 키 정보
     error_occurred = Signal(str)
     
     def __init__(self, aws_manager, sub_category: int = None, status_filter: str = None,
@@ -33,14 +35,7 @@ class ProductLoadThread(QThread):
     
     def run(self):
         """스레드 실행"""
-        #TODO : 여기서 좀더 케이스 별로 나눠서 처리하는게 좋을듯
         try:
-            #TODO : 여기서 GSI로 필터링 + 카테고리별 조회 하면 좋을듯 
-            #TODO : 맨 처음에 사용자가 작업할 영역 선택 한 뒤에 자동으로 status 필터링을 걸어서 바로 작업 진행 할 수 있도록 ? 
-            # dynamoDB에서 GSI를 통해 상품 목록 조회()
-            '''
-            products : dynamoDB에서 case 별로 쿼리 날려서 조회 한 뒤에 Items key 값만 추출한뒤 python 딕셔너리로 변환한 데이터 리스트
-            '''
             if self.status_filter and self.status_filter != "ALL":
                 # 상태별 필터링
                 products, last_key = self.aws_manager.get_product_by_status(
@@ -48,7 +43,6 @@ class ProductLoadThread(QThread):
                     limit=self.limit,
                     exclusive_start_key=self.exclusive_start_key
                 )
-            # dynamoDB에서 카테고리별 조회(맨 처음 사용자가 작업할 서브 카테고리 선정했을때 사용)
             elif self.sub_category:
                 # 서브 카테고리별 조회
                 products, last_key = self.aws_manager.get_product_list(
@@ -69,6 +63,33 @@ class ProductLoadThread(QThread):
             
         except Exception as e:
             logger.error(f"상품 로드 중 오류: {e}")
+            self.error_occurred.emit(str(e))
+
+
+class PageImagePreloadThread(QThread):
+    """페이지별 이미지 정보 수집 스레드"""
+    
+    preload_ready = Signal(list)  # download_tasks
+    error_occurred = Signal(str)
+    
+    def __init__(self, aws_manager, main_category: str, sub_category: int, product_data_list: List[Dict[str, Any]]):
+        super().__init__()
+        self.aws_manager = aws_manager
+        self.main_category = main_category
+        self.sub_category = sub_category
+        self.product_data_list = product_data_list
+    
+    def run(self):
+        """스레드 실행"""
+        try:
+            # 이미 가져온 제품 데이터에서 직접 이미지 정보 수집 (DynamoDB 추가 호출 없음)
+            download_tasks = self.aws_manager.batch_get_product_images_from_data(
+                self.main_category, self.sub_category, self.product_data_list
+            )
+            self.preload_ready.emit(download_tasks)
+            
+        except Exception as e:
+            logger.error(f"이미지 정보 수집 중 오류: {e}")
             self.error_occurred.emit(str(e))
 
 
@@ -169,6 +190,18 @@ class ProductItem(QWidget):
     def update_status(self, new_status: str):
         """상태 업데이트"""
         self.product_data['current_status'] = new_status
+        
+        # 기존 레이아웃 정리
+        if self.layout():
+            # 기존 레이아웃의 모든 위젯 제거
+            while self.layout().count():
+                child = self.layout().takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+            
+            # 기존 레이아웃 삭제
+            self.layout().deleteLater()
+        
         # UI 다시 구성
         self.setup_ui()
 
@@ -179,21 +212,26 @@ class ProductListWidget(QWidget):
     - product_selected : dynamoDB에서 조회한 상품 데이터정보가 QListWidgetItem에 저장된 상태에서 특정 제품 클릭시 해당 data가 딕셔너리로 형태로 방출 
                          => MainWindow 클래스에서 정의한 (self.on_product_selected) 함수에게 딕셔너리로 전달
     - page_changed : 페이지 변경 시 상품 목록 로드
+    - page_images_preloaded : 페이지 이미지 프리로딩 완료 시그널
     """
     
-    product_selected = Signal(dict)  #
+    product_selected = Signal(dict)
     page_changed = Signal(int)  # 페이지 변경
+    page_images_preloaded = Signal()  # 페이지 이미지 프리로딩 완료
     
     def __init__(self):
         super().__init__()
         self.aws_manager = None
+        self.image_cache = None
         self.current_products = []
         self.current_page = 0
         self.last_evaluated_key = None
         self.total_pages = 0
         self.load_thread = None
+        self.preload_thread = None
         self.background_color = "#bcbcbc"
-        self.current_sub_category = None  # 현재 선택된 서브 카테고리
+        self.current_sub_category = None
+        self.current_main_category = None
         
         self.setup_ui()
     
@@ -217,7 +255,7 @@ class ProductListWidget(QWidget):
         title_label.setFont(title_font)
         header_layout.addWidget(title_label)
         
-        # 필터 컨트롤("ALL", "PENDING", "IN_PROGRESS", "COMPLETED") 에 따른 상품 목록 조회
+        # 필터 컨트롤
         filter_layout = QHBoxLayout()
         
         filter_layout.addWidget(QLabel("상태:"))
@@ -239,7 +277,6 @@ class ProductListWidget(QWidget):
         # 상품 목록
         self.product_list = QListWidget()
         self.product_list.setSelectionMode(QListWidget.SingleSelection)
-        # 특정 상품 선택 시 해당 상품의 widget에 저장되어 있는 데이터를 방출 => (시그널-슬롯 연결)
         self.product_list.itemClicked.connect(self.on_item_clicked)
         
         # 리스트 위젯 스타일 개선
@@ -270,12 +307,19 @@ class ProductListWidget(QWidget):
         
         layout.addWidget(self.product_list)
         
-        #RECHECK : 로딩 프로그레스바 어디있지?? 
+        # 로딩 프로그레스바
         self.loading_progress = QProgressBar()
         self.loading_progress.setVisible(False)
+        self.loading_progress.setFormat("상품 목록 로딩 중... %p%")
         layout.addWidget(self.loading_progress)
         
-        # 페이지네이션 컨트롤(하단에 1,2,3,4,5 페이지 버튼 존재)
+        # 이미지 프리로딩 프로그레스바
+        self.preload_progress = QProgressBar()
+        self.preload_progress.setVisible(False)
+        self.preload_progress.setFormat("이미지 다운로드 중... %v/%m")
+        layout.addWidget(self.preload_progress)
+        
+        # 페이지네이션 컨트롤
         pagination_frame = QFrame()
         pagination_frame.setStyleSheet(f"background-color: #e9ecef; color: #212529; border-top: 1px solid #dee2e6;")
         pagination_layout = QHBoxLayout(pagination_frame)
@@ -302,6 +346,31 @@ class ProductListWidget(QWidget):
         """AWS 매니저 설정"""
         self.aws_manager = aws_manager
     
+    def set_image_cache(self, image_cache):
+        """이미지 캐시 설정"""
+        self.image_cache = image_cache
+    
+    def set_category_info(self, main_category: str, sub_category: int):
+        """카테고리 정보 설정"""
+        self.current_main_category = main_category
+        self.current_sub_category = sub_category
+    
+    def set_status_filter(self, status: str):
+        """상태 필터 설정"""
+        try:
+            # 유효한 상태인지 확인
+            valid_statuses = ["ALL", "PENDING", "IN_PROGRESS", "COMPLETED"]
+            if status in valid_statuses:
+                # 시그널 차단하여 on_filter_changed가 호출되지 않도록 함
+                self.status_combo.blockSignals(True)
+                self.status_combo.setCurrentText(status)
+                self.status_combo.blockSignals(False)
+                logger.info(f"상태 필터를 {status}로 설정했습니다.")
+            else:
+                logger.warning(f"유효하지 않은 상태 필터: {status}")
+        except Exception as e:
+            logger.error(f"상태 필터 설정 오류: {e}")
+    
     def on_filter_changed(self):
         """필터 변경 시"""
         self.refresh_products()
@@ -312,7 +381,6 @@ class ProductListWidget(QWidget):
         self.last_evaluated_key = None
         self.load_products_async(sub_category=self.current_sub_category)
 
-    #CHECK : 중요 함수(스레드 사용 하여 dynamoDB에서 데이터 조회 후 데이터 방출) 
     def load_products_async(self, sub_category: int = None, exclusive_start_key: Dict[str, Any] = None):
         """비동기로 상품 로드"""
         if not self.aws_manager:
@@ -320,7 +388,7 @@ class ProductListWidget(QWidget):
         
         # sub_category가 없으면 기본값 사용
         if sub_category is None:
-            sub_category = self.current_sub_category or 1005  # 현재 카테고리 또는 기본 카테고리
+            sub_category = self.current_sub_category or 1005
         
         # 현재 서브 카테고리 업데이트
         self.current_sub_category = sub_category
@@ -330,9 +398,14 @@ class ProductListWidget(QWidget):
             self.load_thread.quit()
             self.load_thread.wait()
         
+        if self.preload_thread and self.preload_thread.isRunning():
+            self.preload_thread.quit()
+            self.preload_thread.wait()
+        
         # 로딩 UI 표시
         self.loading_progress.setVisible(True)
         self.loading_progress.setRange(0, 0)
+        self.preload_progress.setVisible(False)
         self.refresh_btn.setEnabled(False)
         
         # 스레드 생성 및 실행
@@ -345,19 +418,12 @@ class ProductListWidget(QWidget):
             limit=20
         )
         
-        # products_loaded 시그널이 발생하면 on_products_loaded 함수 호출
-        # error_occurred 시그널이 발생하면 on_load_error 함수 호출
         self.load_thread.products_loaded.connect(self.on_products_loaded)
         self.load_thread.error_occurred.connect(self.on_load_error)
-        # 스레드 실행 (.start() 메서드 호출시 run() 메서드 실행)
         self.load_thread.start()
     
     def on_products_loaded(self, products: List[Dict[str, Any]], last_evaluated_key: Dict[str, Any]):
-        """
-        ProductLoadThread 클래스에서 방출한 시그널을 받아서 처리하는 함수
-        - products : dynamoDB에서 조회한 데이터를 딕셔너리로 변환한 데이터 리스트
-        - last_evaluated_key : 다음 페이지 키(페이지네이션 처리를 위한 키)
-        """
+        """상품 목록 로드 완료 처리"""
         self.current_products = products
         self.last_evaluated_key = last_evaluated_key
         
@@ -368,19 +434,134 @@ class ProductListWidget(QWidget):
         # 로딩 UI 숨김
         self.loading_progress.setVisible(False)
         self.refresh_btn.setEnabled(True)
+        
+        # 페이지 이미지 프리로딩 시작
+        self.start_page_image_preload()
+    
+    def start_page_image_preload(self):
+        """페이지 이미지 프리로딩 시작"""
+        if not self.image_cache or not self.current_main_category or not self.current_products:
+            return
+        
+        try:
+            # 현재 페이지 제품 ID 목록 생성 (캐시 설정용)
+            product_ids = [product.get('product_id') for product in self.current_products if product.get('product_id')]
+            
+            if not product_ids:
+                return
+            
+            # 캐시에 현재 페이지 제품 설정
+            self.image_cache.set_current_page_products(product_ids)
+            
+            # 이전 페이지 캐시 정리
+            self.image_cache.clear_non_current_page_cache()
+            
+            # 캐시에 이미지가 이미 있는지 확인
+            cached_count = 0
+            missing_products = []
+            
+            for product in self.current_products:
+                product_id = product.get('product_id')
+                if not product_id:
+                    continue
+                    
+                # 캐시에 해당 제품의 이미지가 있는지 확인
+                cached_images = self.image_cache.get_product_images(product_id)
+                if cached_images and any(images for images in cached_images.values()):
+                    cached_count += 1
+                    logger.debug(f"제품 {product_id} 이미지가 캐시에 이미 존재")
+                else:
+                    missing_products.append(product)
+                    logger.debug(f"제품 {product_id} 이미지가 캐시에 없음")
+            
+            # 모든 제품의 이미지가 캐시에 있는 경우 다운로드 건너뛰기
+            if cached_count == len(self.current_products):
+                logger.info(f"모든 제품 이미지가 캐시에 존재 ({cached_count}개), 다운로드 건너뛰기")
+                self.page_images_preloaded.emit()
+                return
+            
+            # 일부 제품의 이미지가 없는 경우, 해당 제품들만 다운로드
+            logger.info(f"캐시된 제품: {cached_count}개, 다운로드 필요: {len(missing_products)}개")
+            
+            if not missing_products:
+                # 다운로드할 제품이 없으면 바로 완료
+                self.page_images_preloaded.emit()
+                return
+            
+            # 이미지 정보 수집 스레드 시작 (캐시에 없는 제품들만)
+            self.preload_thread = PageImagePreloadThread(
+                self.aws_manager, 
+                self.current_main_category, 
+                self.current_sub_category, 
+                missing_products  # 캐시에 없는 제품들만 전달
+            )
+            
+            self.preload_thread.preload_ready.connect(self.on_preload_ready)
+            self.preload_thread.error_occurred.connect(self.on_preload_error)
+            self.preload_thread.start()
+            
+            # 프리로딩 프로그레스바 표시
+            self.preload_progress.setVisible(True)
+            self.preload_progress.setRange(0, 0)  # 무한 진행바
+            self.preload_progress.setFormat("이미지 정보 수집 중...")
+            
+        except Exception as e:
+            logger.error(f"페이지 이미지 프리로딩 시작 실패: {e}")
+    
+    def on_preload_ready(self, download_tasks: List[Dict]):
+        """이미지 정보 수집 완료, 다운로드 시작"""
+        if not download_tasks:
+            self.preload_progress.setVisible(False)
+            self.page_images_preloaded.emit()
+            return
+        
+        try:
+            # 다운로드 프로그레스바 설정
+            self.preload_progress.setRange(0, len(download_tasks))
+            self.preload_progress.setValue(0)
+            self.preload_progress.setFormat(f"이미지 다운로드 중... 0/{len(download_tasks)}")
+            
+            # 이미지 캐시로 배치 다운로드 시작
+            success = self.image_cache.download_page_images(
+                download_tasks,
+                progress_callback=self.on_download_progress,
+                completed_callback=self.on_download_completed
+            )
+            
+            if not success:
+                self.preload_progress.setVisible(False)
+                logger.error("이미지 다운로드 시작 실패")
+                
+        except Exception as e:
+            logger.error(f"이미지 다운로드 시작 중 오류: {e}")
+            self.preload_progress.setVisible(False)
+    
+    def on_download_progress(self, current: int, total: int):
+        """다운로드 진행률 업데이트"""
+        self.preload_progress.setValue(current)
+        self.preload_progress.setFormat(f"이미지 다운로드 중... {current}/{total}")
+    
+    def on_download_completed(self):
+        """이미지 다운로드 완료"""
+        self.preload_progress.setVisible(False)
+        self.page_images_preloaded.emit()
+        logger.info(f"페이지 이미지 프리로딩 완료: {len(self.current_products)}개 제품")
+    
+    def on_preload_error(self, error_message: str):
+        """이미지 프리로딩 오류"""
+        self.preload_progress.setVisible(False)
+        logger.error(f"이미지 프리로딩 오류: {error_message}")
     
     def on_load_error(self, error_message: str):
         """로드 오류 처리"""
         self.loading_progress.setVisible(False)
+        self.preload_progress.setVisible(False)
         self.refresh_btn.setEnabled(True)
         
         QMessageBox.warning(self, "로드 오류", f"상품 목록을 불러오는 중 오류가 발생했습니다:\n{error_message}")
     
     def update_product_list(self):
-        """
-        상품 목록 UI 업데이트
-        - self.current_products : dynamoDB에서 조회한 데이터를 딕셔너리로 변환한 데이터 리스트
-        """
+        """상품 목록 UI 업데이트"""
         self.product_list.clear()
         
         for product in self.current_products:
@@ -392,7 +573,7 @@ class ProductListWidget(QWidget):
             
             # 아이템 크기 설정 (여백 포함)
             widget_size = item_widget.sizeHint()
-            list_item.setSizeHint(QSize(widget_size.width(), widget_size.height() + 8))  # 상하 여백 추가
+            list_item.setSizeHint(QSize(widget_size.width(), widget_size.height() + 8))
             
             # 아이템에 데이터 저장
             list_item.setData(Qt.UserRole, product)
@@ -424,17 +605,13 @@ class ProductListWidget(QWidget):
             self.load_products_async(sub_category=self.current_sub_category, exclusive_start_key=self.last_evaluated_key)
     
     def on_item_clicked(self, item: QListWidgetItem):
-        """
-        아이템 클릭 시
-        - item : 클릭한 아이템(QListWidgetItem)
-        - item.data(Qt.UserRole) : 클릭한 아이템에 저장되어 있는 데이터(ProductItem 클래스에서 정의한 데이터) 
-        - Qt.UserRole은 QListWidgetItem에 저장된 사용자 정의 데이터를 가져오는 역할
-        - 코드에서 item.setData(Qt.UserRole, product)로 상품 데이터를 저장할 때, product는 DynamoDB에서 조회한 상품 정보를 딕셔너리 형태로 변환한 데이터
-        - 따라서 item.data(Qt.UserRole)은 해당 상품의 모든 정보가 담긴 딕셔너리를 반환합니다
-        """
+        """아이템 클릭 시"""
         product_data = item.data(Qt.UserRole)
         if product_data:
-            self.product_selected.emit(product_data) # => MainWindow 클래스에서 정의한 (self.on_product_selected) 함수에게 딕셔너리로 전달
+            # 메인 카테고리 정보 추가
+            if self.current_main_category:
+                product_data['main_category'] = self.current_main_category
+            self.product_selected.emit(product_data)
     
     def update_product_status(self, product_id: str, new_status: str):
         """특정 상품의 상태 업데이트"""
@@ -458,6 +635,10 @@ class ProductListWidget(QWidget):
         if self.load_thread and self.load_thread.isRunning():
             self.load_thread.quit()
             self.load_thread.wait()
+        
+        if self.preload_thread and self.preload_thread.isRunning():
+            self.preload_thread.quit()
+            self.preload_thread.wait()
     
     def keyPressEvent(self, event):
         """키보드 이벤트를 부모로 전달하여 전역 단축키가 작동하도록 함"""

@@ -116,6 +116,27 @@ class AWSInfrastructureSetup:
         """
         DynamoDB 테이블을 생성합니다.
         
+        테이블 구조:
+        - 파티션 키: sub_category (서브 카테고리 ID)
+        - 정렬 키: product_id (제품 ID)
+        
+        주요 필드들:
+        - main_category: 메인 카테고리명 (String)
+        - current_status: 큐레이션 상태 ('PENDING' | 'COMPLETED')
+        - created_at: 생성 시각 (ISO 8601)
+        - last_updated_at: 최종 수정 시각 (ISO 8601)
+        - representative_assets: 큐레이션 결과 (JSON 문자열)
+        - completed_by: 작업자 ID (String, 선택적)
+        
+        파일 리스트 필드들 (List):
+        - detail: detail 폴더의 이미지 파일명 리스트 (빈 리스트 허용)
+        - summary: summary 폴더의 이미지 파일명 리스트 (빈 리스트 허용)
+        - segment: segment 폴더의 이미지 파일명 리스트 (빈 리스트 허용)
+        - text: text 폴더의 이미지 파일명 리스트 (빈 리스트 허용)
+        
+        GSI:
+        - CurrentStatus-LastUpdatedAt-GSI: 상태별 최신순 조회용
+        
         Args:
             table_name: 생성할 테이블 이름
             
@@ -129,29 +150,29 @@ class AWSInfrastructureSetup:
                 'KeySchema': [
                     {
                         'AttributeName': 'sub_category',
-                        'KeyType': 'HASH'  # 파티션 키
+                        'KeyType': 'HASH'  # 파티션 키 (서브 카테고리 ID)
                     },
                     {
                         'AttributeName': 'product_id',
-                        'KeyType': 'RANGE'  # 정렬 키
+                        'KeyType': 'RANGE'  # 정렬 키 (제품 ID)
                     }
                 ],
                 'AttributeDefinitions': [
                     {
                         'AttributeName': 'sub_category',
-                        'AttributeType': 'N'
+                        'AttributeType': 'N'  # 숫자 타입
                     },
                     {
                         'AttributeName': 'product_id',
-                        'AttributeType': 'S'
+                        'AttributeType': 'S'  # 문자열 타입
                     },
                     {
                         'AttributeName': 'current_status',
-                        'AttributeType': 'S'
+                        'AttributeType': 'S'  # GSI 파티션 키
                     },
                     {
                         'AttributeName': 'last_updated_at',
-                        'AttributeType': 'S'
+                        'AttributeType': 'S'  # GSI 정렬 키
                     },
                 ],
                 'GlobalSecondaryIndexes': [
@@ -160,19 +181,19 @@ class AWSInfrastructureSetup:
                         'KeySchema': [
                             {
                                 'AttributeName': 'current_status',
-                                'KeyType': 'HASH'
+                                'KeyType': 'HASH'  # 큐레이션 상태별 조회
                             },
                             {
                                 'AttributeName': 'last_updated_at',
-                                'KeyType': 'RANGE'
+                                'KeyType': 'RANGE'  # 최신순 정렬
                             }
                         ],
                         'Projection': {
-                            'ProjectionType': 'ALL'
+                            'ProjectionType': 'ALL'  # 모든 속성 프로젝션
                         },
                     },
                 ],
-                'BillingMode': 'PAY_PER_REQUEST'  # 온디맨드 요금제
+                'BillingMode': 'PAY_PER_REQUEST'  # 온디맨드 요금제 (사용량 기반)
             }
             
             # 테이블 생성
@@ -197,6 +218,16 @@ class AWSInfrastructureSetup:
             print(f"📊 테이블 상태: {table_info['Table']['TableStatus']}")
             print(f"📊 테이블 ARN: {table_info['Table']['TableArn']}")
             print(f"📊 GSI 개수: {len(table_info['Table'].get('GlobalSecondaryIndexes', []))}")
+            print()
+            print("📋 테이블 구조 정보:")
+            print("   🔑 파티션 키: sub_category (서브 카테고리 ID)")
+            print("   🔑 정렬 키: product_id (제품 ID)")
+            print("   📁 파일 리스트 필드:")
+            print("      - detail: detail 폴더 이미지 파일명 (List, 빈 리스트 허용)")
+            print("      - summary: summary 폴더 이미지 파일명 (List, 빈 리스트 허용)")
+            print("      - segment: segment 폴더 이미지 파일명 (List, 빈 리스트 허용)")
+            print("      - text: text 폴더 이미지 파일명 (List, 빈 리스트 허용)")
+            print("   🗂️  GSI: CurrentStatus-LastUpdatedAt-GSI (상태별 최신순 조회)")
             
             return True
             
@@ -247,6 +278,16 @@ class AWSInfrastructureSetup:
         # 결과 요약
         if all(results.values()):
             print("🎉 모든 AWS 인프라 구축이 완료되었습니다!")
+            print()
+            print("✨ 주요 기능:")
+            print("   📸 이미지 파일을 S3에 저장")
+            print("   🗄️  제품 정보를 DynamoDB에 관리")
+            print("   📁 폴더별 파일 리스트를 DynamoDB에 저장하여 S3 조회 최적화")
+            print("   🚀 list_objects_v2 호출 최소화로 비용 효율성 극대화")
+            print()
+            print("🔧 다음 단계:")
+            print("   1. initial_upload.py로 로컬 데이터 업로드")
+            print("   2. gui_main.py로 이미지 큐레이션 작업 시작")
         else:
             print("⚠️  일부 리소스 생성에 실패했습니다:")
             for resource, success in results.items():
