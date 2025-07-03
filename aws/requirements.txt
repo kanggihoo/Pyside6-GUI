@@ -1,21 +1,22 @@
-# GUI 프레임워크
-PySide6>=6.5.0
-
-# AWS SDK
-boto3>=1.26.0
-botocore>=1.29.0
-
-# HTTP 요청
-requests>=2.28.0
-
-# 이미지 처리
-Pillow>=9.0.0
-
-# 로깅 및 설정
-python-json-logger>=2.0.0
-
-# 경로 처리
-pathlib2>=2.3.7; python_version < '3.4'
-
-# 타입 힌트 지원 (Python 3.8 이하)
-typing-extensions>=4.0.0; python_version < '3.9' 
+altgraph==0.17.4
+boto3==1.38.44
+botocore==1.38.44
+certifi==2025.6.15
+charset-normalizer==3.4.2
+idna==3.10
+jmespath==1.0.1
+macholib==1.16.3
+packaging==25.0
+pillow==11.3.0
+pyinstaller==6.14.1
+pyinstaller-hooks-contrib==2025.5
+pyside6==6.9.1
+pyside6-addons==6.9.1
+pyside6-essentials==6.9.1
+python-dateutil==2.9.0.post0
+requests==2.32.4
+s3transfer==0.13.0
+setuptools==80.9.0
+shiboken6==6.9.1
+six==1.17.0
+urllib3==2.5.0
