@@ -34,7 +34,7 @@ jobs:
       run: python package_aws.py
     
     - name: Upload Windows artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: aws-app-windows
         path: AWS_Data_Curator_windows_v*.zip
@@ -65,7 +65,7 @@ jobs:
       run: python package_aws.py
     
     - name: Upload macOS artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: aws-app-macos
         path: AWS_Data_Curator_macos_v*.zip
@@ -79,13 +79,13 @@ jobs:
     
     steps:
     - name: Download Windows artifact
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: aws-app-windows
         path: ./windows-artifacts
     
     - name: Download macOS artifact
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: aws-app-macos
         path: ./macos-artifacts
