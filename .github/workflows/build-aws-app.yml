@@ -3,8 +3,6 @@ name: Build AWS Data Curator
 on:
   push:
     branches: [ main, dev/boto3 ]
-  pull_request:
-    branches: [ main ]
   release:
     types: [ published ]
 
@@ -50,7 +48,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.11'
+        python-version: '3.12'
     
     - name: Install dependencies
       run: |
