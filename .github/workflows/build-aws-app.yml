@@ -25,9 +25,37 @@ jobs:
         pip install -r aws/requirements.txt
         pip install pyinstaller
     
+    - name: List files before build
+      run: |
+        echo "Current directory:"
+        pwd
+        echo "Files in current directory:"
+        dir
+        echo "Files in aws directory:"
+        dir aws
+        echo "aws_app.spec exists:"
+        if (Test-Path "aws_app.spec") { echo "YES" } else { echo "NO" }
+    
     - name: Build AWS app
       run: python build_aws.py
     
+    - name: List files after build
+      run: |
+        echo "Files after build:"
+        dir
+        echo "dist directory contents:"
+        if (Test-Path "dist") { 
+          dir dist 
+          echo "dist/AWS_Data_Curator.exe exists:"
+          if (Test-Path "dist/AWS_Data_Curator.exe") { echo "YES" } else { echo "NO" }
+          echo "dist/AWS_Data_Curator directory exists:"
+          if (Test-Path "dist/AWS_Data_Curator") { echo "YES" } else { echo "NO" }
+        } else { 
+          echo "dist directory not found" 
+        }
+        echo "build directory contents:"
+        if (Test-Path "build") { dir build } else { echo "build directory not found" }
+
     - name: Create ZIP package
       run: python package_aws.py
     

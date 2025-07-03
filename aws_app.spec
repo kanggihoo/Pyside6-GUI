@@ -65,11 +65,12 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# Windows용 실행파일 생성 - onedir 모드
 exe = EXE(
     pyz,
     a.scripts,
     [],
-    exclude_binaries=True,
+    exclude_binaries=True,  # 이 설정이 onedir 모드를 만듦
     name='AWS_Data_Curator',
     debug=False,
     bootloader_ignore_signals=False,
@@ -83,6 +84,7 @@ exe = EXE(
     icon=None,
 )
 
+# 라이브러리 수집
 coll = COLLECT(
     exe,
     a.binaries,

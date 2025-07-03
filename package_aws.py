@@ -30,24 +30,31 @@ def create_zip_package():
         executable_path = app_path
         platform_name = 'macos'
         is_app_bundle = True
+        print(f"Found macOS app bundle: {app_path}")
     elif sys.platform.startswith('win'):
-        # Windows: 실행파일과 라이브러리 폴더 모두 확인
+        # Windows: onedir 모드와 onefile 모드 모두 지원
         exe_path = dist_path / 'AWS_Data_Curator.exe'
-        lib_dir = dist_path / 'AWS_Data_Curator'
+        exe_dir = dist_path / 'AWS_Data_Curator'
         
-        if not exe_path.exists():
-            print(f"ERROR: Windows executable not found at {exe_path}")
+        if exe_path.exists():
+            # onefile 모드
+            executable_path = exe_path
+            is_onedir = False
+            print(f"Found Windows executable (onefile): {exe_path}")
+        elif exe_dir.exists() and (exe_dir / 'AWS_Data_Curator.exe').exists():
+            # onedir 모드
+            executable_path = exe_dir / 'AWS_Data_Curator.exe'
+            is_onedir = True
+            print(f"Found Windows executable (onedir): {executable_path}")
+        else:
+            print("ERROR: Windows executable not found")
             print("Available files in dist:")
             for item in dist_path.iterdir():
                 print(f"  {item.name}")
             sys.exit(1)
         
-        executable_path = exe_path
         platform_name = 'windows'
         is_app_bundle = False
-        print(f"Found Windows executable: {exe_path}")
-        if lib_dir.exists():
-            print(f"Found library directory: {lib_dir}")
     else:
         exe_path = dist_path / 'AWS_Data_Curator'
         if not exe_path.exists():
@@ -56,6 +63,7 @@ def create_zip_package():
         executable_path = exe_path
         platform_name = 'linux'
         is_app_bundle = False
+        is_onedir = False
     
     # ZIP 파일명 생성
     version = "1.0.0"
@@ -70,15 +78,22 @@ def create_zip_package():
                 if file_path.is_file():
                     arcname = str(file_path.relative_to(dist_path))
                     zipf.write(file_path, arcname)
+                    print(f"Added: {arcname}")
+        elif sys.platform.startswith('win') and is_onedir:
+            # Windows onedir 모드: 전체 디렉토리 추가
+            exe_dir = dist_path / 'AWS_Data_Curator'
+            for file_path in exe_dir.rglob('*'):
+                if file_path.is_file():
+                    arcname = str(file_path.relative_to(dist_path))
+                    zipf.write(file_path, arcname)
+                    print(f"Added: {arcname}")
         else:
-            # Windows/Linux: 실행파일과 라이브러리들 추가
+            # Windows onefile 또는 Linux: 실행파일과 라이브러리들 추가
             for item in dist_path.iterdir():
                 if item.is_file():
-                    # 실행파일 직접 추가
                     zipf.write(item, item.name)
                     print(f"Added file: {item.name}")
                 elif item.is_dir():
-                    # 라이브러리 디렉토리의 모든 파일 추가
                     for file_path in item.rglob('*'):
                         if file_path.is_file():
                             arcname = str(file_path.relative_to(dist_path))
