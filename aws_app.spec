@@ -1,106 +1,112 @@
-#!/usr/bin/env python3
-"""
-AWS 데이터셋 큐레이션 앱 빌드 스크립트
-"""
+# -*- mode: python ; coding: utf-8 -*-
 
-import subprocess
-import sys
-import shutil
 import os
+import sys
 from pathlib import Path
 
-def clean_build():
-    """이전 빌드 파일 정리"""
-    for dir_name in ['build', 'dist', '__pycache__']:
-        if os.path.exists(dir_name):
-            shutil.rmtree(dir_name)
-    print("Cleaned previous build files")
+block_cipher = None
 
-def check_dependencies():
-    """필요한 의존성 확인"""
-    required_packages = ['PyInstaller', 'PySide6', 'boto3', 'requests', 'PIL']
-    for package in required_packages:
-        try:
-            __import__(package)
-            print(f"OK: {package} found")
-        except ImportError:
-            print(f"ERROR: {package} not installed")
-            sys.exit(1)
+# 프로젝트 루트 경로
+project_root = Path(os.getcwd())
 
-def build_app():
-    """앱 빌드"""
-    print("Starting AWS app build...")
-    
-    # 의존성 확인
-    check_dependencies()
-    
-    # 클린 빌드
-    clean_build()
-    
-    # 파일 존재 확인
-    spec_file = Path('aws_app.spec')
-    if not spec_file.exists():
-        print(f"ERROR: {spec_file} not found")
-        sys.exit(1)
-    
-    main_file = Path('aws/gui_main.py')
-    if not main_file.exists():
-        print(f"ERROR: {main_file} not found")
-        sys.exit(1)
-    
-    print(f"Found spec file: {spec_file}")
-    print(f"Found main file: {main_file}")
-    
-    # PyInstaller 실행
-    cmd = [sys.executable, '-m', 'PyInstaller', 'aws_app.spec']
-    
-    try:
-        print(f"Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print("Build successful!")
-        print("Build output:")
-        print(result.stdout)
-        
-        # 결과 확인
-        dist_path = Path('dist')
-        if dist_path.exists():
-            print(f"dist directory contents:")
-            for item in dist_path.iterdir():
-                print(f"  {item.name}")
-            
-            if sys.platform == 'darwin':
-                app_path = dist_path / 'AWS Data Curator.app'
-                if app_path.exists():
-                    print(f"macOS app created: {app_path}")
-                else:
-                    print("ERROR: macOS app not found")
-            elif sys.platform.startswith('win'):
-                exe_path = dist_path / 'AWS_Data_Curator.exe'
-                if exe_path.exists():
-                    print(f"Windows executable created: {exe_path}")
-                else:
-                    print("ERROR: Windows executable not found")
-                    # dist 폴더 내용 더 자세히 확인
-                    for item in dist_path.iterdir():
-                        if item.is_dir():
-                            print(f"  Directory: {item.name}")
-                            for subitem in item.iterdir():
-                                print(f"    {subitem.name}")
-            else:
-                exe_path = dist_path / 'AWS_Data_Curator'
-                if exe_path.exists():
-                    print(f"Linux executable created: {exe_path}")
-                else:
-                    print("ERROR: Linux executable not found")
-        else:
-            print("ERROR: dist directory not created")
-        
-    except subprocess.CalledProcessError as e:
-        print("Build failed!")
-        print(f"Error code: {e.returncode}")
-        print(f"stdout: {e.stdout}")
-        print(f"stderr: {e.stderr}")
-        sys.exit(1)
+# AWS 앱 전용 데이터 파일들
+added_files = [
+    ('aws/config.json', 'aws'),
+]
 
-if __name__ == '__main__':
-    build_app()
+# PySide6와 AWS 관련 hidden imports
+hidden_imports = [
+    'PySide6.QtCore',
+    'PySide6.QtGui', 
+    'PySide6.QtWidgets',
+    'boto3',
+    'botocore',
+    'urllib3',
+    'certifi',
+    'dateutil',
+    'json',
+    'requests',
+    'PIL',
+    'PIL.Image',
+    'aws_manager',
+    'image_cache',
+    'widgets.main_image_viewer',
+    'widgets.representative_panel',
+    'widgets.product_list_widget',
+    'widgets.category_selection_dialog',
+    'widgets.curation_confirm_dialog',
+    'widgets.pass_reason_dialog',
+    'widgets.image_viewer_dialog',
+    'widgets.image_widgets',
+]
+
+a = Analysis(
+    ['aws/gui_main.py'],
+    pathex=[str(project_root), str(project_root / 'aws')],
+    binaries=[],
+    datas=added_files,
+    hiddenimports=hidden_imports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[
+        'tkinter',
+        'matplotlib',
+        'numpy',
+        'pandas',
+        'scipy',
+        'IPython',
+    ],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='AWS_Data_Curator',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+    disable_windowed_traceback=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='AWS_Data_Curator',
+)
+
+# macOS용 앱 번들 생성
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        coll,
+        name='AWS Data Curator.app',
+        icon=None,
+        bundle_identifier='com.yourcompany.awsdatacurator',
+        info_plist={
+            'CFBundleDisplayName': 'AWS 데이터셋 큐레이션 도구',
+            'CFBundleShortVersionString': '1.0.0',
+            'CFBundleVersion': '1.0.0',
+            'NSHighResolutionCapable': True,
+            'NSHumanReadableCopyright': 'Copyright © 2024',
+            'NSRequiresAquaSystemAppearance': False,
+        },
+    )
