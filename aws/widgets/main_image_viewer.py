@@ -15,6 +15,7 @@ import json
 import os
 from PIL import Image
 from pathlib import Path
+import weakref
 
 # 이미지 뷰어 모듈 import
 from .image_viewer_dialog import UrlImageViewerDialog
@@ -107,7 +108,12 @@ class CurationWorker(QThread):
     def __init__(self, aws_manager, move_operations: list):
         super().__init__()
         self.aws_manager = aws_manager
-        self.move_operations = move_operations
+        self.move_operations = move_operations.copy()  # 복사본 사용
+        self._is_cancelled = False  # 취소 플래그
+    
+    def cancel(self):
+        """작업 취소"""
+        self._is_cancelled = True
     
     def run(self):
         """백그라운드에서 S3 이동 작업 수행"""
@@ -120,8 +126,18 @@ class CurationWorker(QThread):
             
             self.progress_updated.emit("S3 이미지 이동을 시작합니다...", 0)
             
+            # 취소 확인
+            if self._is_cancelled:
+                self.completed.emit(False, "작업이 취소되었습니다.")
+                return
+            
             # 배치 이동 실행
             results = self.aws_manager.batch_move_s3_objects(self.move_operations)
+            
+            # 취소 확인
+            if self._is_cancelled:
+                self.completed.emit(False, "작업이 취소되었습니다.")
+                return
             
             # 결과 분석
             success_count = sum(1 for success in results.values() if success)
@@ -141,7 +157,13 @@ class CurationWorker(QThread):
                 self.completed.emit(False, message)
                 
         except Exception as e:
-            self.completed.emit(False, f"❌ 큐레이션 처리 중 오류: {str(e)}")
+            if not self._is_cancelled:
+                self.completed.emit(False, f"❌ 큐레이션 처리 중 오류: {str(e)}")
+            else:
+                self.completed.emit(False, "작업이 취소되었습니다.")
+        finally:
+            # 메모리 정리
+            self.move_operations.clear()
 
 
 class GridImageWidget(QWidget):
@@ -156,6 +178,9 @@ class GridImageWidget(QWidget):
         self.image_cache = image_cache
         self.is_selected = False
         self._is_destroyed = False  # 위젯 파괴 상태 추적
+        self._signals_connected = False  # 시그널 연결 상태 추적
+        self._connected_signals_and_slots = []  # (시그널, 슬롯) 튜플 저장
+        self._cleanup_timer = None  # 정리 타이머
         
         self.setup_ui()
         self.load_image()
@@ -213,7 +238,7 @@ class GridImageWidget(QWidget):
         self.filename_label.setStyleSheet("font-size: 9px; color: #333; background-color: white; max-height: 30px; padding: 2px;")
         layout.addWidget(self.filename_label)
         
-        # 마우스 이벤트 설정
+        # 마우스 이벤트 설정 - 더 안전한 방식으로 처리
         self.setMouseTracking(True)
         self.image_frame.mousePressEvent = self.on_clicked
         self.image_label.mousePressEvent = self.on_clicked
@@ -223,102 +248,272 @@ class GridImageWidget(QWidget):
     def closeEvent(self, event):
         """위젯 닫힐 때 호출"""
         self._is_destroyed = True
+        self.schedule_cleanup()
         super().closeEvent(event)
 
     def deleteLater(self):
         """위젯 삭제 예정 시 호출"""
         self._is_destroyed = True
+        self.schedule_cleanup()
         super().deleteLater()
-
+    
+    def schedule_cleanup(self):
+        """정리 작업을 지연 실행"""
+        if self._cleanup_timer is None:
+            self._cleanup_timer = QTimer()
+            self._cleanup_timer.setSingleShot(True)
+            self._cleanup_timer.timeout.connect(self.perform_cleanup)
+            self._cleanup_timer.start(100)  # 100ms 후 정리 실행
+    
+    def perform_cleanup(self):
+        """실제 정리 작업 수행 - 메모리 손상 방지 강화"""
+        if self._is_destroyed:  # 이미 파괴된 상태면 중복 정리 방지
+            return
+        
+        # 정리 시작 전에 파일명 저장 (정리 후에는 접근 불가)
+        filename = "unknown"
+        try:
+            if hasattr(self, 'image_data') and self.image_data:
+                filename = self.image_data.get('filename', 'unknown')
+        except:
+            pass
+        
+        try:
+            self._is_destroyed = True  # 정리 시작 시점부터 파괴 상태로 마킹
+            
+            # 시그널 연결 해제 - 더 안전한 방식
+            try:
+                self.disconnect_all_signals()
+            except Exception as signal_error:
+                logger.warning(f"시그널 해제 중 오류: {signal_error}")
+            
+            # 이미지 레이블 정리 - 더 안전한 방식
+            try:
+                if (hasattr(self, 'image_label') and self.image_label and 
+                    hasattr(self.image_label, 'parent') and 
+                    self.image_label.parent() is not None):
+                    
+                    # 이미지 데이터 정리
+                    try:
+                        self.image_label.clear()
+                        self.image_label.setPixmap(QPixmap())
+                    except RuntimeError:
+                        pass  # Qt 객체가 이미 삭제된 경우
+                    except Exception as clear_error:
+                        logger.warning(f"이미지 레이블 정리 중 오류: {clear_error}")
+                        
+            except Exception as label_error:
+                logger.warning(f"이미지 레이블 접근 중 오류: {label_error}")
+            
+            # 타이머 정리
+            try:
+                if hasattr(self, '_cleanup_timer') and self._cleanup_timer:
+                    self._cleanup_timer.stop()
+                    self._cleanup_timer.deleteLater()
+                    self._cleanup_timer = None
+            except Exception as timer_error:
+                logger.warning(f"타이머 정리 중 오류: {timer_error}")
+            
+            # 이미지 데이터 참조 정리
+            try:
+                if hasattr(self, 'image_data'):
+                    self.image_data = None
+            except Exception as data_error:
+                logger.warning(f"이미지 데이터 정리 중 오류: {data_error}")
+            
+            # 이미지 캐시 참조 정리
+            try:
+                if hasattr(self, 'image_cache'):
+                    self.image_cache = None
+            except Exception as cache_error:
+                logger.warning(f"이미지 캐시 정리 중 오류: {cache_error}")
+            
+            logger.debug(f"GridImageWidget 정리 완료: {filename}")
+            
+        except Exception as e:
+            logger.warning(f"GridImageWidget 정리 중 오류: {str(e)}")
+        
+        # 가비지 컬렉션 강제 실행
+        import gc
+        gc.collect()
+    
+    def disconnect_all_signals(self):
+        """모든 시그널 연결 해제 - 메모리 손상 방지 강화"""
+        try:
+            # 저장된 시그널-슬롯 튜플들을 사용하여 정확히 해제
+            if hasattr(self, '_connected_signals_and_slots'):
+                for signal, slot in list(self._connected_signals_and_slots):  # 순회 중 리스트 변경 방지
+                    try:
+                        if signal and slot and hasattr(signal, 'disconnect'):
+                            # 연결된 시그널이 있는지 확인 후 해제
+                            if hasattr(signal, 'receivers') and signal.receivers(slot) > 0:
+                                signal.disconnect(slot)
+                                logger.debug(f"시그널-슬롯 해제 성공")
+                            else:
+                                logger.debug(f"시그널-슬롯 이미 해제됨")
+                    except (RuntimeError, TypeError):
+                        # 이미 연결 해제되었거나 유효하지 않은 경우 무시
+                        logger.debug(f"시그널-슬롯 이미 해제됨")
+                    except Exception as e:
+                        logger.warning(f"특정 시그널-슬롯 해제 중 오류: {e}")
+                
+                # 연결 목록 초기화
+                self._connected_signals_and_slots.clear()
+                self._signals_connected = False
+            
+            logger.debug(f"GridImageWidget 시그널 모두 해제 완료")
+            
+        except Exception as e:
+            logger.warning(f"시그널 해제 중 오류: {str(e)}")
+    
+    def connect_signals(self, clicked_slot, double_clicked_slot):
+        """시그널 연결 - 추적 가능한 방식으로"""
+        try:
+            if not self._is_destroyed:
+                # 기존 연결 해제
+                self.disconnect_all_signals()
+                
+                # 새로운 연결 - 시그널과 슬롯을 튜플로 저장
+                self.clicked.connect(clicked_slot)
+                self._connected_signals_and_slots.append((self.clicked, clicked_slot))
+                
+                self.double_clicked.connect(double_clicked_slot)
+                self._connected_signals_and_slots.append((self.double_clicked, double_clicked_slot))
+                
+                self._signals_connected = True
+                logger.debug(f"GridImageWidget 시그널 연결 완료: {self.image_data.get('filename', 'unknown')}")
+        except Exception as e:
+            logger.error(f"시그널 연결 실패: {str(e)}")
+    
+    def disconnect_signals(self):
+        """시그널 연결 해제 - 추적된 슬롯들을 사용"""
+        self.disconnect_all_signals()
+    
     def update_frame_style(self):
-        """프레임 스타일 업데이트"""
+        """프레임 스타일 업데이트 - 메모리 안전 버전"""
         if self._is_destroyed:
             return
             
-        if self.is_selected:
-            self.image_frame.setStyleSheet("""
-                QFrame {
-                    border: 3px solid #007bff;
-                    border-radius: 4px;
-                    background-color: #e3f2fd;
-                }
-            """)
-        else:
-            self.image_frame.setStyleSheet("""
-                QFrame {
-                    border: 2px solid #dee2e6;
-                    border-radius: 4px;
-                    background-color: #f8f9fa;
-                }
-                QFrame:hover {
-                    border-color: #007bff;
-                    background-color: #f0f8ff;
-                }
-            """)
+        try:
+            # 위젯이 유효한지 확인
+            if not hasattr(self, 'image_frame') or not self.image_frame:
+                return
+            
+            if not hasattr(self.image_frame, 'setStyleSheet'):
+                return
+            
+            if self.is_selected:
+                self.image_frame.setStyleSheet("""
+                    QFrame {
+                        border: 3px solid #007bff;
+                        border-radius: 4px;
+                        background-color: #e3f2fd;
+                    }
+                """)
+            else:
+                self.image_frame.setStyleSheet("""
+                    QFrame {
+                        border: 2px solid #dee2e6;
+                        border-radius: 4px;
+                        background-color: #f8f9fa;
+                    }
+                    QFrame:hover {
+                        border-color: #007bff;
+                        background-color: #f0f8ff;
+                    }
+                """)
+        except RuntimeError:
+            self._is_destroyed = True
+        except Exception as e:
+            logger.warning(f"프레임 스타일 업데이트 중 오류: {e}")
+            self._is_destroyed = True
     
     def set_selected(self, selected: bool):
-        """선택 상태 설정"""
+        """선택 상태 설정 - 메모리 안전 버전"""
         if self._is_destroyed:
             return
             
-        self.is_selected = selected
-        self.update_frame_style()
+        try:
+            self.is_selected = selected
+            self.update_frame_style()
+        except RuntimeError:
+            self._is_destroyed = True
+        except Exception as e:
+            logger.warning(f"선택 상태 설정 중 오류: {e}")
+            self._is_destroyed = True
     
     def load_image(self):
-        """이미지 로드"""
+        """이미지 로드 - 메모리 안전 버전"""
         if self._is_destroyed:
             return
             
-        url = self.image_data.get('url')
-        if not url:
-            self.set_placeholder_image("URL 없음")
-            return
-        
-        #RECHECK : 왜 segment 이미지인 경우를 분리해서 하는거지 ? 
-        # 로컬 segment 이미지인 경우 직접 로드
-        if self.image_data.get('is_local_segment', False):
-            self.load_local_segment_image()
-            return
-        
-        if not self.image_cache:
-            filename = self.image_data.get('filename', 'unknown')
-            logger.error(f"이미지 캐시 없음: {filename}")
-            self.set_placeholder_image("캐시 없음")
-            return
-        
-        # 로딩 플레이스홀더 표시
-        self.set_placeholder_image("로딩 중...")
-        
-        # 캐시에서 이미지 가져오기 - 안전한 콜백 사용
         try:
-            cached_pixmap = self.image_cache.get_image(url, self.safe_on_image_loaded)
+            # 이미지 데이터 유효성 확인
+            if not hasattr(self, 'image_data') or not self.image_data:
+                self.set_placeholder_image("데이터 없음")
+                return
             
-            if cached_pixmap:
-                self.set_image(cached_pixmap)
-            else:
-                # 5초 후에도 로딩 중이면 문제가 있다고 가정
+            url = self.image_data.get('url')
+            if not url:
+                self.set_placeholder_image("URL 없음")
+                return
+            
+            # 로컬 segment 이미지인 경우 직접 로드
+            if self.image_data.get('is_local_segment', False):
+                self.load_local_segment_image()
+                return
+            
+            if not self.image_cache:
                 filename = self.image_data.get('filename', 'unknown')
-                QTimer.singleShot(5000, lambda: self.check_loading_timeout(filename))
+                logger.error(f"이미지 캐시 없음: {filename}")
+                self.set_placeholder_image("캐시 없음")
+                return
+            
+            # 로딩 플레이스홀더 표시
+            self.set_placeholder_image("로딩 중...")
+            
+            # 캐시에서 이미지 가져오기 - 안전한 콜백 사용
+            try:
+                cached_pixmap = self.image_cache.get_image(url, self.safe_on_image_loaded)
+                
+                if cached_pixmap:
+                    self.set_image(cached_pixmap)
+                else:
+                    # 5초 후에도 로딩 중이면 문제가 있다고 가정
+                    filename = self.image_data.get('filename', 'unknown')
+                    timeout_checker = self._create_timeout_checker(filename)
+                    QTimer.singleShot(5000, timeout_checker)
+                    
+            except Exception as cache_error:
+                logger.warning(f"캐시에서 이미지 가져오기 실패: {cache_error}")
+                self.set_placeholder_image("캐시 오류")
                 
         except Exception as e:
-            filename = self.image_data.get('filename', 'unknown')
-            logger.error(f"이미지 캐시 get_image 호출 오류 {filename}: {str(e)}")
-            self.set_placeholder_image("캐시 오류")
+            filename = getattr(self, 'image_data', {}).get('filename', 'unknown')
+            logger.error(f"이미지 로드 오류 {filename}: {str(e)}")
+            self.set_placeholder_image("로드 오류")
     
-    def check_loading_timeout(self, filename):
-        """로딩 타임아웃 체크"""
-        try:
-            if not self._is_destroyed and hasattr(self, 'image_label') and self.image_label:
-                current_pixmap = self.image_label.pixmap()
-                if not current_pixmap or current_pixmap.isNull():
-                    self.set_placeholder_image("타임아웃")
-        except Exception as e:
-            logger.error(f"타임아웃 체크 오류: {str(e)}")
+    def _create_timeout_checker(self, filename):
+        """타임아웃 체커 생성 - 약한 참조 사용"""
+        def timeout_checker():
+            try:
+                if not self._is_destroyed and hasattr(self, 'image_label') and self.image_label:
+                    current_pixmap = self.image_label.pixmap()
+                    if not current_pixmap or current_pixmap.isNull():
+                        self.set_placeholder_image("타임아웃")
+            except Exception as e:
+                logger.error(f"타임아웃 체크 오류: {str(e)}")
+        return timeout_checker
     
     def load_local_segment_image(self):
-        """로컬 segment 이미지 직접 로드"""
+        """로컬 segment 이미지 직접 로드 - 메모리 안전 버전"""
         try:
             if self._is_destroyed:
+                return
+            
+            # 이미지 데이터 유효성 확인
+            if not hasattr(self, 'image_data') or not self.image_data:
+                self.set_placeholder_image("데이터 없음")
                 return
             
             local_path = self.image_data.get('local_path')
@@ -332,12 +527,17 @@ class GridImageWidget(QWidget):
                 return
             
             # QPixmap으로 직접 로드
-            pixmap = QPixmap(local_path)
-            
-            if pixmap.isNull():
+            try:
+                pixmap = QPixmap(local_path)
+                
+                if pixmap.isNull():
+                    self.set_placeholder_image("로드 실패")
+                else:
+                    self.set_image(pixmap)
+                    
+            except Exception as pixmap_error:
+                logger.warning(f"QPixmap 로드 실패: {pixmap_error}")
                 self.set_placeholder_image("로드 실패")
-            else:
-                self.set_image(pixmap)
                 
         except Exception as e:
             logger.error(f"로컬 segment 이미지 로드 오류: {str(e)}")
@@ -383,31 +583,45 @@ class GridImageWidget(QWidget):
         self.safe_on_image_loaded(url, pixmap)
     
     def set_placeholder_image(self, text: str):
-        """플레이스홀더 이미지 생성 및 설정"""
+        """플레이스홀더 이미지 생성 및 설정 - 메모리 안전 버전"""
         if self._is_destroyed:
             return
             
         try:
+            # 이미지 레이블 유효성 확인
+            if not hasattr(self, 'image_label') or not self.image_label:
+                return
+            
+            if not hasattr(self.image_label, 'setPixmap'):
+                return
+            
             # 기존 image_viewer.py의 플레이스홀더 로직 참조
-            placeholder = QPixmap(190, 190)
-            placeholder.fill(QColor(245, 245, 245))  # 연한 회색 배경
-            
-            # 텍스트 그리기
-            painter = QPainter(placeholder)
-            painter.setPen(QPen(QColor(150, 150, 150)))
-            
-            # 폰트 설정
-            font = QFont()
-            font.setPointSize(9)
-            font.setBold(True)
-            painter.setFont(font)
-            
-            # 텍스트를 중앙에 그리기
-            painter.drawText(placeholder.rect(), Qt.AlignCenter | Qt.TextWordWrap, text)
-            painter.end()
-            
-            if self.image_label and not self._is_destroyed:
-                self.image_label.setPixmap(placeholder)
+            try:
+                placeholder = QPixmap(190, 190)
+                placeholder.fill(QColor(245, 245, 245))  # 연한 회색 배경
+                
+                # 텍스트 그리기
+                painter = QPainter(placeholder)
+                painter.setPen(QPen(QColor(150, 150, 150)))
+                
+                # 폰트 설정
+                font = QFont()
+                font.setPointSize(9)
+                font.setBold(True)
+                painter.setFont(font)
+                
+                # 텍스트를 중앙에 그리기
+                painter.drawText(placeholder.rect(), Qt.AlignCenter | Qt.TextWordWrap, text)
+                painter.end()
+                
+                # 이미지 레이블에 설정
+                try:
+                    self.image_label.setPixmap(placeholder)
+                except RuntimeError:
+                    self._is_destroyed = True
+                    
+            except Exception as pixmap_error:
+                logger.warning(f"플레이스홀더 생성 실패: {pixmap_error}")
                 
         except RuntimeError as e:
             logger.warning(f"플레이스홀더 설정 중 Qt 객체 삭제됨: {str(e)}")
@@ -416,11 +630,18 @@ class GridImageWidget(QWidget):
             logger.error(f"플레이스홀더 설정 오류: {str(e)}")
     
     def set_image(self, pixmap: QPixmap):
-        """이미지 설정 - 기존 image_viewer.py의 로직 참조"""
+        """이미지 설정 - 메모리 안전 버전"""
         if self._is_destroyed:
             return
             
         try:
+            # 이미지 레이블 유효성 확인
+            if not hasattr(self, 'image_label') or not self.image_label:
+                return
+            
+            if not hasattr(self.image_label, 'setPixmap'):
+                return
+            
             if pixmap.isNull():
                 self.set_placeholder_image("잘못된 이미지")
                 return
@@ -431,28 +652,38 @@ class GridImageWidget(QWidget):
             
             # 원본 이미지가 너무 작은 경우 원본 크기 유지
             if original_size.width() <= target_size.width() and original_size.height() <= target_size.height():
-                if self.image_label and not self._is_destroyed:
+                try:
                     self.image_label.setPixmap(pixmap)
+                except RuntimeError:
+                    self._is_destroyed = True
                 return
             
             # 비율을 유지하면서 목표 크기에 맞게 스케일링
-            scale_x = target_size.width() / original_size.width()
-            scale_y = target_size.height() / original_size.height()
-            scale_factor = min(scale_x, scale_y)
-            
-            # 최종 크기 계산
-            new_width = int(original_size.width() * scale_factor)
-            new_height = int(original_size.height() * scale_factor)
-            
-            # 고품질 스케일링 적용
-            scaled_pixmap = pixmap.scaled(
-                new_width, new_height,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            )
-            
-            if self.image_label and not self._is_destroyed:
+            try:
+                scale_x = target_size.width() / original_size.width()
+                scale_y = target_size.height() / original_size.height()
+                scale_factor = min(scale_x, scale_y)
+                
+                # 최종 크기 계산
+                new_width = int(original_size.width() * scale_factor)
+                new_height = int(original_size.height() * scale_factor)
+                
+                # 고품질 스케일링 적용
+                scaled_pixmap = pixmap.scaled(
+                    new_width, new_height,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
+                
                 self.image_label.setPixmap(scaled_pixmap)
+                
+            except Exception as scaling_error:
+                logger.warning(f"이미지 스케일링 실패: {scaling_error}")
+                # 스케일링 실패 시 원본 이미지 사용
+                try:
+                    self.image_label.setPixmap(pixmap)
+                except RuntimeError:
+                    self._is_destroyed = True
                 
         except RuntimeError as e:
             logger.warning(f"이미지 설정 중 Qt 객체 삭제됨: {str(e)}")
@@ -461,20 +692,36 @@ class GridImageWidget(QWidget):
             logger.error(f"이미지 설정 오류: {str(e)}")
     
     def on_clicked(self, event):
-        """클릭 이벤트"""
+        """클릭 이벤트 - 메모리 안전 버전"""
         if self._is_destroyed:
             return
             
         if event.button() == Qt.LeftButton:
-            self.clicked.emit(self.image_data)
+            try:
+                # 이미지 데이터 유효성 확인
+                if hasattr(self, 'image_data') and self.image_data:
+                    self.clicked.emit(self.image_data)
+            except RuntimeError:
+                # 위젯이 파괴된 상태에서 시그널 발생 시도 시 무시
+                self._is_destroyed = True
+            except Exception as e:
+                logger.error(f"클릭 이벤트 처리 오류: {str(e)}")
     
     def on_double_clicked(self, event):
-        """더블클릭 이벤트 - 이미지 뷰어 열기"""
+        """더블클릭 이벤트 - 이미지 뷰어 열기 (메모리 안전 버전)"""
         if self._is_destroyed:
             return
             
         if event.button() == Qt.LeftButton:
-            self.double_clicked.emit(self.image_data)
+            try:
+                # 이미지 데이터 유효성 확인
+                if hasattr(self, 'image_data') and self.image_data:
+                    self.double_clicked.emit(self.image_data)
+            except RuntimeError:
+                # 위젯이 파괴된 상태에서 시그널 발생 시도 시 무시
+                self._is_destroyed = True
+            except Exception as e:
+                logger.error(f"더블클릭 이벤트 처리 오류: {str(e)}")
 
 
 class MainImageViewer(QWidget):
@@ -617,9 +864,10 @@ class MainImageViewer(QWidget):
             from datetime import datetime
             timestamp = datetime.now().isoformat()
             
-            # 히스토리에 기록
+            # 히스토리에 기록 (깊은 복사 사용)
+            import copy
             move_record = {
-                'image_data': selected_image.copy(),
+                'image_data': copy.deepcopy(selected_image),
                 'from_folder': 'segment',
                 'to_folder': 'text',
                 'timestamp': timestamp,
@@ -658,38 +906,160 @@ class MainImageViewer(QWidget):
             self.show_status_message(f"❌ 이미지 이동 실패: {str(e)}", error=True)
     
     def move_image_local(self, image_data: dict, from_folder: str, to_folder: str):
-        """로컬 상태에서 이미지를 폴더 간 이동"""
+        """로컬 상태에서 이미지를 폴더 간 이동 - 메모리 안전 버전"""
         try:
             # from_folder에서 이미지 제거
             from_tab_data = self.folder_tabs.get(from_folder)
             if from_tab_data and image_data in from_tab_data['images']:
                 from_tab_data['images'].remove(image_data)
             
-            # to_folder에 이미지 추가 (폴더 정보 업데이트)
-            moved_image_data = image_data.copy()
+            # 깊은 복사로 새로운 이미지 데이터 생성 (메모리 안전)
+            import copy
+            moved_image_data = copy.deepcopy(image_data)
             moved_image_data['folder'] = to_folder
+            
+            # 로컬 segment 이미지인 경우 키(key) 업데이트
+            if moved_image_data.get('is_local_segment', False):
+                # 새로운 캐시 구조에 맞는 키 업데이트
+                if self.current_product:
+                    main_category = self.current_product.get('main_category', '')
+                    sub_category = self.current_product.get('sub_category', '')
+                    product_id = self.current_product.get('product_id', '')
+                    filename = moved_image_data.get('filename', '')
+                    
+                    if all([main_category, sub_category, product_id, filename]):
+                        # S3 키를 새로운 폴더로 업데이트
+                        moved_image_data['key'] = f"{main_category}/{sub_category}/{product_id}/{to_folder}/{filename}"
+                    else:
+                        # 폴백: 간단한 키 형식
+                        moved_image_data['key'] = f"{to_folder}/{filename}"
+                else:
+                    # 제품 정보가 없는 경우 폴백
+                    filename = moved_image_data.get('filename', '')
+                    moved_image_data['key'] = f"{to_folder}/{filename}"
+                
+                # 기존 legacy 방식의 키 처리
+                if moved_image_data.get('is_legacy', False):
+                    filename = moved_image_data.get('filename', '')
+                    if from_folder == 'segment' and to_folder == 'text':
+                        # segments/filename -> text/filename
+                        moved_image_data['key'] = f"text/{filename}"
+                    elif from_folder == 'text' and to_folder == 'segment':
+                        # text/filename -> segments/filename (되돌리기 시)
+                        moved_image_data['key'] = f"segments/{filename}"
+            
+            # S3 이미지인 경우에도 키 업데이트
+            elif not moved_image_data.get('is_local_segment', False):
+                original_key = moved_image_data.get('key', '')
+                if '/' in original_key:
+                    # S3 키 형식: {main_category}/{sub_category}/{product_id}/{folder}/{filename}
+                    key_parts = original_key.split('/')
+                    if len(key_parts) >= 2:
+                        filename = key_parts[-1]
+                        if len(key_parts) >= 4:
+                            # 전체 경로 형식
+                            key_parts[-2] = to_folder  # 폴더 부분만 변경
+                            moved_image_data['key'] = '/'.join(key_parts)
+                        else:
+                            # 간단한 형식
+                            moved_image_data['key'] = f"{to_folder}/{filename}"
             
             to_tab_data = self.folder_tabs.get(to_folder)
             if to_tab_data:
                 to_tab_data['images'].append(moved_image_data)
             
-            # 전체 이미지 목록에서도 업데이트
+            # 전체 이미지 목록에서도 업데이트 (참조 안전하게)
             for i, img in enumerate(self.current_images):
                 if img == image_data:
                     self.current_images[i] = moved_image_data
                     break
             
-            # 디스플레이 업데이트
-            if from_tab_data:
-                self.update_folder_display(from_folder)
-            if to_tab_data:
-                self.update_folder_display(to_folder)
+            # 디스플레이 업데이트를 지연 실행 (메모리 안전)
+            # 위젯 정리 전에 폴더명을 미리 저장
+            from_folder_copy = from_folder
+            to_folder_copy = to_folder
             
-            logger.info(f"로컬 이미지 이동 완료: {from_folder} -> {to_folder}")
+            QTimer.singleShot(50, lambda: self._safe_update_folder_display(from_folder_copy))
+            QTimer.singleShot(100, lambda: self._safe_update_folder_display(to_folder_copy))
+            
+            logger.debug(f"로컬 이미지 이동 완료: {from_folder} -> {to_folder}")
+            logger.debug(f"업데이트된 키: {moved_image_data.get('key', 'N/A')}")
             
         except Exception as e:
             logger.error(f"로컬 이미지 이동 오류: {str(e)}")
             raise
+    
+    def _safe_update_folder_display(self, folder_name: str):
+        """안전한 폴더 디스플레이 업데이트 - 메모리 손상 방지"""
+        try:
+            if not hasattr(self, 'folder_tabs') or folder_name not in self.folder_tabs:
+                return
+            
+            tab_data = self.folder_tabs[folder_name]
+            if not tab_data or 'grid_layout' not in tab_data:
+                return
+            
+            # 기존 위젯들을 안전하게 정리
+            self.safe_cleanup_widgets(tab_data)
+            
+            # 레이아웃 정리
+            self.clear_grid_layout(tab_data['grid_layout'])
+            
+            # 새로운 위젯들 생성
+            grid_layout = tab_data['grid_layout']
+            image_widgets = []
+            
+            for image_data in tab_data['images']:
+                try:
+                    image_widget = GridImageWidget(image_data, self.image_cache)
+                    
+                    # 시그널 연결 - partial 함수 객체를 명시적으로 저장
+                    try:
+                        from functools import partial
+                        clicked_slot = partial(self.on_image_selected, folder_name)
+                        double_clicked_slot = self.open_image_viewer
+                        
+                        # 시그널 연결 (GridImageWidget 내부에서 튜플로 저장됨)
+                        image_widget.connect_signals(clicked_slot, double_clicked_slot)
+                        
+                    except Exception as e:
+                        logger.error(f"시그널 연결 실패: {str(e)}")
+                        continue
+                    
+                    grid_layout.addWidget(image_widget)
+                    image_widgets.append(image_widget)
+                    
+                except Exception as e:
+                    logger.error(f"이미지 위젯 생성 실패: {str(e)}")
+                    continue
+            
+            # 위젯 목록 업데이트
+            tab_data['image_widgets'] = image_widgets
+            
+            # 선택된 이미지 상태 복원
+            if tab_data.get('selected_image_data'):
+                self._restore_selection_state(tab_data)
+            
+            logger.debug(f"안전한 폴더 디스플레이 업데이트 완료: {folder_name}")
+            
+        except Exception as e:
+            logger.error(f"안전한 폴더 디스플레이 업데이트 오류 {folder_name}: {str(e)}")
+    
+    def _restore_selection_state(self, tab_data):
+        """선택 상태 복원"""
+        try:
+            selected_image_data = tab_data.get('selected_image_data')
+            if not selected_image_data:
+                return
+            
+            # 파일명으로 해당 위젯 찾기
+            for widget in tab_data.get('image_widgets', []):
+                if (hasattr(widget, 'image_data') and 
+                    widget.image_data.get('filename') == selected_image_data.get('filename')):
+                    widget.set_selected(True)
+                    break
+        except Exception as e:
+            logger.error(f"선택 상태 복원 오류: {str(e)}")
     
     def undo_last_move(self):
         """마지막 이동 작업을 되돌리기"""
@@ -707,14 +1077,31 @@ class MainImageViewer(QWidget):
                 # 마지막 이동과 매칭되는 S3 이동 제거
                 self.pending_moves.pop()
             
-            # 로컬에서 이미지를 원래 폴더로 되돌리기
-            image_data = last_move['image_data']
+            # 원본 이미지 데이터와 이동 정보
+            original_image_data = last_move['image_data']
             from_folder = last_move['to_folder']  # 되돌리기이므로 to/from 반대
             to_folder = last_move['from_folder']
+            filename = original_image_data.get('filename', 'Unknown')
             
-            self.move_image_local(image_data, from_folder, to_folder)
+            # 현재 from_folder에서 해당 이미지를 찾기 (파일명으로 매칭)
+            from_tab_data = self.folder_tabs.get(from_folder)
+            if not from_tab_data:
+                raise Exception(f"{from_folder} 폴더를 찾을 수 없습니다")
             
-            filename = image_data.get('filename', 'Unknown')
+            # 파일명으로 현재 이미지 데이터를 찾기
+            current_image_data = None
+            for img in from_tab_data['images']:
+                if img.get('filename') == filename:
+                    current_image_data = img
+                    break
+            
+            if not current_image_data:
+                raise Exception(f"{from_folder} 폴더에서 '{filename}' 이미지를 찾을 수 없습니다")
+            
+            # 현재 이미지 데이터를 사용해서 이동
+            self.move_image_local(current_image_data, from_folder, to_folder)
+            
+            # 성공 메시지 표시
             if was_local_segment:
                 self.show_status_message(f"↶ '{filename}'을 {to_folder.upper()} 폴더로 되돌렸습니다 (로컬 이미지)")
             else:
@@ -722,6 +1109,8 @@ class MainImageViewer(QWidget):
             
             # 버튼 상태 업데이트
             self.update_all_button_states()
+            
+            logger.debug(f"되돌리기 완료: {from_folder} -> {to_folder}, 파일: {filename}")
             
         except Exception as e:
             logger.error(f"되돌리기 오류: {str(e)}")
@@ -1269,7 +1658,7 @@ class MainImageViewer(QWidget):
             if 'segment' in folder_names:
                 segment_index = folder_names.index('segment')
                 self.tab_widget.setCurrentIndex(segment_index)
-                logger.info("기본 탭을 segment로 설정")
+                logger.debug("기본 탭을 segment로 설정")
             else:
                 logger.warning("segment 탭을 찾을 수 없습니다.")
         except Exception as e:
@@ -1288,10 +1677,10 @@ class MainImageViewer(QWidget):
             next_index = (current_index + 1) % total_tabs
             self.tab_widget.setCurrentIndex(next_index)
             
-            # 현재 탭 이름 로그
+            # 현재 탭 이름 로그 (DEBUG 레벨로 변경)
             folder_names = list(self.folder_tabs.keys())
             if next_index < len(folder_names):
-                logger.info(f"탭 이동: {folder_names[next_index]}")
+                logger.debug(f"탭 이동: {folder_names[next_index]}")
                 
         except Exception as e:
             logger.error(f"탭 이동 오류: {str(e)}")
@@ -1310,16 +1699,7 @@ class MainImageViewer(QWidget):
             grid_layout = tab_data['grid_layout']
             
             # 기존 이미지 위젯들 안전하게 제거
-            if 'image_widgets' in tab_data:
-                for widget in tab_data['image_widgets']:
-                    if hasattr(widget, '_is_destroyed'):
-                        widget._is_destroyed = True
-                        # 시그널 연결 해제
-                        try:
-                            widget.clicked.disconnect()
-                            widget.double_clicked.disconnect()
-                        except:
-                            pass  # 이미 연결 해제된 경우 무시
+            self.safe_cleanup_widgets(tab_data)
             
             self.clear_grid_layout(grid_layout)
             tab_data['image_widgets'] = []
@@ -1335,13 +1715,31 @@ class MainImageViewer(QWidget):
                     row = i // columns
                     col = i % columns
                     
-                    # 그리드 이미지 위젯 생성
-                    image_widget = GridImageWidget(image_data, self.image_cache)
-                    image_widget.clicked.connect(lambda data, folder=folder_name: self.on_image_selected(folder, data))
-                    image_widget.double_clicked.connect(lambda data: self.open_image_viewer(data))
-                    
-                    grid_layout.addWidget(image_widget, row, col)
-                    tab_data['image_widgets'].append(image_widget)
+                    try:
+                        # 그리드 이미지 위젯 생성
+                        image_widget = GridImageWidget(image_data, self.image_cache)
+                        
+                        # 시그널 연결 - partial 함수 객체를 명시적으로 저장
+                        try:
+                            from functools import partial
+                            clicked_slot = partial(self.on_image_selected, folder_name)
+                            double_clicked_slot = self.open_image_viewer
+                            
+                            # 시그널 연결 (GridImageWidget 내부에서 튜플로 저장됨)
+                            image_widget.connect_signals(clicked_slot, double_clicked_slot)
+                            
+                        except Exception as e:
+                            logger.warning(f"이미지 위젯 시그널 연결 실패: {str(e)}")
+                            # 위젯이 파괴된 경우 목록에서 제거
+                            if hasattr(image_widget, '_is_destroyed') and image_widget._is_destroyed:
+                                continue
+                        
+                        grid_layout.addWidget(image_widget, row, col)
+                        tab_data['image_widgets'].append(image_widget)
+                        
+                    except Exception as e:
+                        logger.error(f"이미지 위젯 생성 실패: {str(e)}")
+                        continue
                 
                 # 그리드의 마지막에 스트레치 추가
                 spacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
@@ -1360,26 +1758,92 @@ class MainImageViewer(QWidget):
         except Exception as e:
             logger.error(f"폴더 디스플레이 업데이트 오류 {folder_name}: {str(e)}")
     
+    def safe_cleanup_widgets(self, tab_data):
+        """위젯들을 안전하게 정리 - 메모리 손상 방지 강화"""
+        if 'image_widgets' not in tab_data:
+            return
+        
+        # 위젯 목록을 복사하고 즉시 초기화하여 중복 처리 방지
+        widgets_to_delete = tab_data['image_widgets'].copy()
+        tab_data['image_widgets'] = []  # 참조를 즉시 제거하여 새롭게 추가될 위젯과 겹치지 않도록 함
+        
+        for widget in widgets_to_delete:
+            try:
+                if not widget:
+                    continue
+                
+                # 위젯이 이미 파괴되었는지 확인
+                if hasattr(widget, '_is_destroyed') and widget._is_destroyed:
+                    continue
+                
+                # 위젯이 유효한 Qt 객체인지 확인
+                if not hasattr(widget, 'isWidgetType') or not widget.isWidgetType():
+                    continue
+                
+                # 위젯 정보 로깅 (cleanup 전에 미리 저장)
+                widget_name = "unknown"
+                try:
+                    if hasattr(widget, 'image_data') and widget.image_data:
+                        widget_name = widget.image_data.get('filename', 'unknown')
+                except:
+                    pass
+                
+                # 위젯 내부의 cleanup 로직 호출 (안전하게)
+                try:
+                    if hasattr(widget, 'perform_cleanup'):
+                        widget.perform_cleanup()
+                    elif hasattr(widget, 'cleanup'):
+                        widget.cleanup()
+                except Exception as cleanup_error:
+                    logger.warning(f"위젯 cleanup 중 오류: {cleanup_error}")
+                
+                # 부모-자식 관계 안전하게 끊기
+                try:
+                    if hasattr(widget, 'parent') and widget.parent() is not None:
+                        widget.setParent(None)
+                except Exception as parent_error:
+                    logger.warning(f"부모 관계 끊기 중 오류: {parent_error}")
+                
+                # Qt 이벤트 루프에서 안전하게 삭제 예약
+                try:
+                    if hasattr(widget, 'deleteLater'):
+                        widget.deleteLater()
+                except Exception as delete_error:
+                    logger.warning(f"deleteLater 호출 중 오류: {delete_error}")
+                
+                logger.debug(f"위젯 정리 완료: {widget_name}")
+                
+            except Exception as e:
+                logger.warning(f"MainImageViewer::safe_cleanup_widgets: 위젯 정리 중 오류: {str(e)}")
+                continue
+        
+        # 가비지 컬렉션 강제 실행 (메모리 정리)
+        import gc
+        gc.collect()
+    
     def clear_grid_layout(self, layout):
-        """그리드 레이아웃 정리"""
+        """그리드 레이아웃 정리 - 레이아웃에서 위젯 제거만 담당"""
         try:
             while layout.count():
                 child = layout.takeAt(0)
                 if child.widget():
                     widget = child.widget()
-                    # GridImageWidget인 경우 안전하게 정리
-                    if isinstance(widget, GridImageWidget):
-                        widget._is_destroyed = True  # 삭제 상태 마킹
-                        # 시그널 연결 해제
-                        try:
-                            widget.clicked.disconnect()
-                            widget.double_clicked.disconnect()
-                        except:
-                            pass  # 이미 연결 해제된 경우 무시
-                    widget.deleteLater()
+                    try:
+                        # 레이아웃에서만 제거 (실제 위젯 정리는 safe_cleanup_widgets에서 처리)
+                        if widget.parent():
+                            widget.setParent(None)
+                        
+                        # GridImageWidget인 경우 파괴 상태만 마킹
+                        if isinstance(widget, GridImageWidget):
+                            widget._is_destroyed = True
+                        
+                    except Exception as e:
+                        logger.warning(f"레이아웃에서 위젯 제거 중 오류: {str(e)}")
+                        continue
                 elif child.spacerItem():
                     # 스페이서 아이템 제거
-                    pass
+                    layout.removeItem(child.spacerItem())
+                    
         except Exception as e:
             logger.error(f"그리드 레이아웃 정리 오류: {str(e)}")
     
@@ -1495,32 +1959,106 @@ class MainImageViewer(QWidget):
     def load_existing_segment_images(self):
         """
             기존 로컬 Segment 이미지들을 로드
-            - 사용자가 이미지 뷰어에서 새로운 segment 이미지를 생성한 경우 캐쉬 디렉토리 / images / segments 디렉토리에 이미지 저장됨
-            - 만약 해당 폴더내에 이미지가 존재하는 경우 
+            - 사용자가 이미지 뷰어에서 새로운 segment 이미지를 생성한 경우 캐시 디렉토리/{product_id}/segment/ 디렉토리에 이미지 저장됨
+            - 만약 해당 폴더내에 이미지가 존재하는 경우 로드
         """
         try:
             if not self.current_product:
                 return
             
-            # 캐시 segments 디렉토리 확인
+            product_id = self.current_product.get('product_id', '')
+            if not product_id:
+                return
+            
+            # 캐시 디렉토리에서 제품별 segment 폴더 확인
             if self.image_cache and hasattr(self.image_cache, 'cache_dir'):
                 base_dir = Path(self.image_cache.cache_dir)
             else:
-                base_dir = Path.home() / '.cache' / 'ai_dataset_curation' / 'images'
+                base_dir = Path.home() / '.cache' / 'ai_dataset_curation' / 'product_images'
             
-            segments_dir = base_dir / 'segments'
+            # 제품별 segment 디렉토리: {cache_dir}/{product_id}/segment/
+            product_segment_dir = base_dir / product_id / 'segment'
             
-            if not segments_dir.exists():
+            if not product_segment_dir.exists():
+                # 기존 방식의 segments 폴더도 확인 (하위 호환성)
+                legacy_segments_dir = base_dir / 'segments'
+                if legacy_segments_dir.exists():
+                    self._load_legacy_segment_images(legacy_segments_dir, product_id)
                 return
             
-            # 현재 제품 ID와 관련된 segment 이미지들 찾기
-            product_id = self.current_product.get('product_id', '')
             segment_images = []
             
-            # .jpg 파일들만 확인
-            for img_file in segments_dir.glob('*.jpg'):
+            # .jpg, .png 파일들만 확인
+            for img_file in product_segment_dir.glob('*'):
+                if img_file.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+                    try:
+                        # 이미지 데이터 생성
+                        file_size = img_file.stat().st_size
+                        
+                        # 이미지 크기 확인
+                        try:
+                            with Image.open(img_file) as pil_img:
+                                width, height = pil_img.size
+                        except Exception:
+                            width, height = 512, 512
+                        
+                        file_url = f"file://{img_file.absolute()}"
+                        
+                        # 표시용 이름 생성
+                        display_name = self._generate_display_name_for_existing(img_file.name)
+                        
+                        # S3 키 형식 생성
+                        main_category = self.current_product.get('main_category', '')
+                        sub_category = self.current_product.get('sub_category', '')
+                        s3_key = f"segment/{img_file.name}"
+                        if all([main_category, sub_category, product_id]):
+                            s3_key = f"{main_category}/{sub_category}/{product_id}/segment/{img_file.name}"
+                        
+                        image_data = {
+                            'key': s3_key,
+                            'url': file_url,
+                            'folder': 'segment',
+                            'filename': img_file.name,
+                            'local_path': str(img_file),
+                            'is_local_segment': True,
+                            'file_size': file_size,
+                            'dimensions': f"{width}x{height}",
+                            'product_id': product_id,
+                            'display_name': display_name,
+                            'cached': True,
+                            'cache_path': str(img_file)
+                        }
+                        
+                        segment_images.append(image_data)
+                        
+                    except Exception as e:
+                        logger.warning(f"Segment 이미지 로드 실패 {img_file}: {str(e)}")
+            
+            # segment 폴더에 기존 이미지들 추가
+            if segment_images and 'segment' in self.folder_tabs:
+                segment_tab_data = self.folder_tabs['segment']
+                
+                # 기존 이미지들과 중복 제거 (파일명 기준)
+                existing_filenames = {img['filename'] for img in segment_tab_data['images']}
+                new_images = [img for img in segment_images if img['filename'] not in existing_filenames]
+                
+                segment_tab_data['images'].extend(new_images)
+                self.current_images.extend(new_images)
+                
+                logger.debug(f"제품별 segment 폴더에서 {len(new_images)}개 이미지 로드: {product_id}")
+                
+        except Exception as e:
+            logger.error(f"기존 Segment 이미지 로드 오류: {str(e)}")
+
+    def _load_legacy_segment_images(self, legacy_segments_dir: Path, product_id: str):
+        """기존 방식의 segments 폴더에서 이미지 로드 (하위 호환성)"""
+        try:
+            segment_images = []
+            
+            # .jpg 파일들만 확인하고 제품 ID와 관련된 것만 로드
+            for img_file in legacy_segments_dir.glob('*.jpg'):
                 try:
-                    # 파일명 패턴 확인 (새로운 형식과 기존 형식 모두 지원)
+                    # 파일명 패턴 확인 (제품 ID 기반)
                     should_include = False
                     
                     # 새로운 형식: PROD_seg_001.jpg (제품 ID 기반)
@@ -1529,7 +2067,7 @@ class MainImageViewer(QWidget):
                     # 기존 형식: 제품 ID가 파일명에 포함된 경우
                     elif product_id and product_id in img_file.name:
                         should_include = True
-                    # seg_로 시작하는 일반 형식
+                    # seg_로 시작하는 일반 형식 (조심스럽게 포함)
                     elif img_file.name.startswith('seg_'):
                         should_include = True
                     
@@ -1550,7 +2088,7 @@ class MainImageViewer(QWidget):
                         display_name = self._generate_display_name_for_existing(img_file.name)
                         
                         image_data = {
-                            'key': f"segments/{img_file.name}",
+                            'key': f"segments/{img_file.name}",  # 기존 키 형식 유지
                             'url': file_url,
                             'folder': 'segment',
                             'filename': img_file.name,
@@ -1559,13 +2097,14 @@ class MainImageViewer(QWidget):
                             'file_size': file_size,
                             'dimensions': f"{width}x{height}",
                             'product_id': product_id,
-                            'display_name': display_name
+                            'display_name': display_name,
+                            'is_legacy': True  # 기존 방식임을 표시
                         }
                         
                         segment_images.append(image_data)
                         
                 except Exception as e:
-                    logger.warning(f"Segment 이미지 로드 실패 {img_file}: {str(e)}")
+                    logger.warning(f"Legacy Segment 이미지 로드 실패 {img_file}: {str(e)}")
             
             # segment 폴더에 기존 이미지들 추가
             if segment_images and 'segment' in self.folder_tabs:
@@ -1578,8 +2117,10 @@ class MainImageViewer(QWidget):
                 segment_tab_data['images'].extend(new_images)
                 self.current_images.extend(new_images)
                 
+                logger.debug(f"Legacy segments 폴더에서 {len(new_images)}개 이미지 로드: {product_id}")
+                
         except Exception as e:
-            logger.error(f"기존 Segment 이미지 로드 오류: {str(e)}")
+            logger.error(f"Legacy Segment 이미지 로드 오류: {str(e)}")
 
     def _generate_display_name_for_existing(self, filename: str) -> str:
         """기존 파일의 표시용 이름 생성"""
@@ -1721,21 +2262,28 @@ class MainImageViewer(QWidget):
             
             # 워커 쓰레드 정리 (curation_worker만)
             if self.curation_worker:
-                self.curation_worker.quit()
-                self.curation_worker.wait()
+                if self.curation_worker.isRunning():
+                    self.curation_worker.cancel()  # 취소 신호 전송
+                    self.curation_worker.quit()
+                    if not self.curation_worker.wait(3000):  # 3초 대기
+                        self.curation_worker.terminate()  # 강제 종료
+                        self.curation_worker.wait()
+                self.curation_worker.deleteLater()
                 self.curation_worker = None
             
+            # 모든 폴더 탭의 위젯들 안전하게 정리 (순서 중요)
             for folder_name, tab_data in self.folder_tabs.items():
-                # 기존 위젯들을 안전하게 정리
-                if 'image_widgets' in tab_data:
-                    for widget in tab_data['image_widgets']:
-                        if hasattr(widget, '_is_destroyed'):
-                            widget._is_destroyed = True
+                # 1. 먼저 위젯들을 안전하게 정리
+                self.safe_cleanup_widgets(tab_data)
                 
+                # 2. 데이터 초기화
                 tab_data['images'] = []
                 tab_data['selected_image_data'] = None
-                tab_data['image_widgets'] = []
+                
+                # 3. 레이아웃 정리
                 self.clear_grid_layout(tab_data['grid_layout'])
+                
+                # 4. 디스플레이 업데이트
                 self.update_folder_display(folder_name)
             
             self.image_info_label.setText("이미지를 선택해주세요")
@@ -1743,6 +2291,8 @@ class MainImageViewer(QWidget):
             # 모든 버튼 상태 초기화
             self.move_to_text_btn.setEnabled(False)
             self.undo_btn.setEnabled(False)
+            
+            logger.debug("MainImageViewer 초기화 완료")
             
         except Exception as e:
             logger.error(f"뷰어 초기화 오류: {str(e)}")

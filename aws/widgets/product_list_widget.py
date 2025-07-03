@@ -154,6 +154,8 @@ class ProductItem(QWidget):
         
         if current_status == 'COMPLETED':
             status_label.setStyleSheet("color: #155724; background-color: #d4edda; font-weight: bold; padding: 4px 8px; border-radius: 4px; border: 1px solid #c3e6cb;")
+        elif current_status == 'PASS':
+            status_label.setStyleSheet("color: #856404; background-color: #fff3cd; font-weight: bold; padding: 4px 8px; border-radius: 4px; border: 1px solid #ffeaa7;")
         elif current_status == 'IN_PROGRESS':
             status_label.setStyleSheet("color: #856404; background-color: #fff3cd; font-weight: bold; padding: 4px 8px; border-radius: 4px; border: 1px solid #ffeaa7;")
         else:
@@ -188,22 +190,62 @@ class ProductItem(QWidget):
         return self.product_data
     
     def update_status(self, new_status: str):
-        """상태 업데이트"""
+        """상태 업데이트 - 상태 레이블만 업데이트하여 레이아웃 충돌 방지"""
         self.product_data['current_status'] = new_status
         
-        # 기존 레이아웃 정리
-        if self.layout():
-            # 기존 레이아웃의 모든 위젯 제거
-            while self.layout().count():
-                child = self.layout().takeAt(0)
-                if child.widget():
-                    child.widget().deleteLater()
+        # 기존 위젯들을 찾아서 상태 레이블만 업데이트
+        try:
+            # 레이아웃을 완전히 재생성하지 않고 상태 레이블만 찾아서 업데이트
+            self._update_status_label_only(new_status)
+        except Exception as e:
+            logger.error(f"상태 레이블 업데이트 실패: {e}")
+            # 폴백: 전체 위젯 재생성 (더 안전한 방식으로)
+            self._recreate_widget_safely(new_status)
+    
+    def _update_status_label_only(self, new_status: str):
+        """상태 레이블만 업데이트하는 안전한 방법"""
+        # 현재 레이아웃에서 상태 관련 위젯들을 찾아서 업데이트
+        layout = self.layout()
+        if not layout:
+            return
             
-            # 기존 레이아웃 삭제
-            self.layout().deleteLater()
+        # 레이아웃을 순회하면서 상태 레이블 찾기
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item.layout():  # 중첩된 레이아웃인 경우
+                nested_layout = item.layout()
+                for j in range(nested_layout.count()):
+                    nested_item = nested_layout.itemAt(j)
+                    if nested_item.widget():
+                        widget = nested_item.widget()
+                        if isinstance(widget, QLabel) and widget.text().startswith("상태:"):
+                            # 상태 레이블 업데이트
+                            widget.setText(f"상태: {new_status}")
+                            
+                            # 상태에 따른 스타일 업데이트
+                            if new_status == 'COMPLETED':
+                                widget.setStyleSheet("color: #155724; background-color: #d4edda; font-weight: bold; padding: 4px 8px; border-radius: 4px; border: 1px solid #c3e6cb;")
+                            elif new_status == 'PASS':
+                                widget.setStyleSheet("color: #856404; background-color: #fff3cd; font-weight: bold; padding: 4px 8px; border-radius: 4px; border: 1px solid #ffeaa7;")
+                            elif new_status == 'IN_PROGRESS':
+                                widget.setStyleSheet("color: #856404; background-color: #fff3cd; font-weight: bold; padding: 4px 8px; border-radius: 4px; border: 1px solid #ffeaa7;")
+                            else:
+                                widget.setStyleSheet("color: #721c24; background-color: #f8d7da; font-weight: bold; padding: 4px 8px; border-radius: 4px; border: 1px solid #f5c6cb;")
+                            return
+    
+    def _recreate_widget_safely(self, new_status: str):
+        """안전한 방식으로 위젯 재생성"""
+        # 부모 위젯과 사이즈 정보 저장
+        parent_widget = self.parent()
+        current_size = self.size()
         
-        # UI 다시 구성
-        self.setup_ui()
+        # 새로운 ProductItem 생성
+        new_widget = ProductItem(self.product_data)
+        new_widget.resize(current_size)
+        
+        # 현재 위젯을 새로운 위젯으로 교체하는 로직은 복잡하므로
+        # 현재는 상태 데이터만 업데이트하고 다음 새로고침 시 반영되도록 함
+        logger.info(f"상품 {self.product_data.get('product_id')} 상태가 {new_status}로 업데이트됨 (다음 새로고침 시 UI 반영)")
 
 
 class ProductListWidget(QWidget):
@@ -260,7 +302,7 @@ class ProductListWidget(QWidget):
         
         filter_layout.addWidget(QLabel("상태:"))
         self.status_combo = QComboBox()
-        self.status_combo.addItems(["ALL", "PENDING", "IN_PROGRESS", "COMPLETED"])
+        self.status_combo.addItems(["ALL", "PENDING", "IN_PROGRESS", "COMPLETED", "PASS"])
         self.status_combo.currentTextChanged.connect(self.on_filter_changed)
         filter_layout.addWidget(self.status_combo)
         
@@ -359,7 +401,7 @@ class ProductListWidget(QWidget):
         """상태 필터 설정"""
         try:
             # 유효한 상태인지 확인
-            valid_statuses = ["ALL", "PENDING", "IN_PROGRESS", "COMPLETED"]
+            valid_statuses = ["ALL", "PENDING", "IN_PROGRESS", "COMPLETED", "PASS"]
             if status in valid_statuses:
                 # 시그널 차단하여 on_filter_changed가 호출되지 않도록 함
                 self.status_combo.blockSignals(True)
@@ -632,13 +674,34 @@ class ProductListWidget(QWidget):
     
     def cleanup(self):
         """정리 작업"""
-        if self.load_thread and self.load_thread.isRunning():
-            self.load_thread.quit()
-            self.load_thread.wait()
-        
-        if self.preload_thread and self.preload_thread.isRunning():
-            self.preload_thread.quit()
-            self.preload_thread.wait()
+        try:
+            # 로드 스레드 정리
+            if self.load_thread:
+                if self.load_thread.isRunning():
+                    self.load_thread.quit()
+                    if not self.load_thread.wait(3000):  # 3초 대기
+                        self.load_thread.terminate()  # 강제 종료
+                        self.load_thread.wait()
+                self.load_thread.deleteLater()
+                self.load_thread = None
+            
+            # 프리로드 스레드 정리
+            if self.preload_thread:
+                if self.preload_thread.isRunning():
+                    self.preload_thread.quit()
+                    if not self.preload_thread.wait(3000):  # 3초 대기
+                        self.preload_thread.terminate()  # 강제 종료
+                        self.preload_thread.wait()
+                self.preload_thread.deleteLater()
+                self.preload_thread = None
+            
+            # UI 정리
+            self.product_list.clear()
+            self.current_products.clear()
+            self.last_evaluated_key = None
+            
+        except Exception as e:
+            logger.error(f"ProductListWidget 정리 중 오류: {str(e)}")
     
     def keyPressEvent(self, event):
         """키보드 이벤트를 부모로 전달하여 전역 단축키가 작동하도록 함"""

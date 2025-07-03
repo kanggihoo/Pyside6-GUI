@@ -14,7 +14,7 @@ from datetime import datetime
 
 # 현재 스크립트 경로 기준으로 aws_manager 모듈 임포트
 sys.path.insert(0, str(Path(__file__).parent))
-from aws_manager import create_aws_manager
+from aws_manager import create_aws_manager , AWSManager
 
 
 #TODO : 로깅에서의 메시지 출력 , loger file 관련 추가 필요 . (업로드 실패한 경우에 대해서는 )
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 class InitialUploader:
     """초기 데이터 업로드 담당 클래스"""
     
-    def __init__(self, data_root_path: str, aws_manager):
+    def __init__(self, data_root_path: str, aws_manager:AWSManager):
         """
         초기화
         
@@ -45,7 +45,7 @@ class InitialUploader:
             aws_manager: AWS Manager 인스턴스
         """
         self.data_root_path = Path(data_root_path)
-        self.aws_manager = aws_manager
+        self.aws_manager:AWSManager = aws_manager
         
         # 통계 정보
         self.stats = {
@@ -66,19 +66,56 @@ class InitialUploader:
             "product_counts": {},
             "total_products": 0
         }
+
+        # 새로운 제품 카운트 관리 (메타데이터 업데이트용)
+        self.new_product_counts = {}  # {f"{main_category}_{sub_category}": count}
         
         # 지원하는 이미지 확장자
         self.image_extensions = {'.jpg', '.jpeg', '.png'}
         
         logger.info(f"초기 업로더 초기화 완료 - 데이터 경로: {self.data_root_path}")
     
+    def _update_new_product_count(self, main_category: str, sub_category: int):
+        """새로운 제품 카운트를 증가시킵니다."""
+        key = f"{main_category}_{sub_category}"
+        self.new_product_counts[key] = self.new_product_counts.get(key, 0) + 1
+
+    def _update_all_category_stats(self):
+        """모든 카테고리의 상태 통계를 한 번에 업데이트합니다."""
+        for key, count in self.new_product_counts.items():
+            if count > 0:
+                main_category, sub_category = key.split('_')
+                sub_category = int(sub_category)
+                
+                # 카테고리 상태 통계가 없으면 초기화
+                if not self.aws_manager.get_category_status_stats(main_category, sub_category):
+                    self.aws_manager.initialize_category_status_stats(main_category, sub_category)
+                    logger.info(f"카테고리 상태 통계 초기화: {main_category}-{sub_category}")
+                
+                # PENDING 상태로 한 번에 추가
+                self.aws_manager.update_category_status_stats_atomic(
+                    main_category, sub_category, {'PENDING': count}
+                )
+                logger.info(f"카테고리 {main_category}-{sub_category}에 {count}개 제품 추가됨")
+
     def discover_products(self) -> List[Dict[str, Any]]:
         """
         로컬 데이터 디렉토리에서 제품 정보를 발견합니다. \n
-        서브카테고리 Id , 서브 카테고리 안의 제품 Id , 제품 디렉토리 경로, meta.json 파일 담은 리스트 반환 
+        서브카테고리 Id , 서브 카테고리 안의 제품 Id , 제품 디렉토리 경로, meta.json 파일 담은 리스트 반환 및 메인/서브 카테고리별 제품 수 통계 정보 반환
         
         Returns:
             List[Dict]: 발견된 제품 정보 리스트
+        example : 
+            [
+                {
+                    "main_category": "TOP",
+                    "sub_category": 1005,
+                    "product_id": "674732",
+                    "local_path": "TOP/1005/674732",
+                    "meta_file": "TOP/1005/674732/meta.json"
+                }
+            ]
+        
         """
         products = []
         category_stats = {
@@ -175,9 +212,25 @@ class InitialUploader:
         
         Args:
             product_dir: 제품 디렉토리 경로
-            
+            example : 
+                Path('TOP/1005/674732')
         Returns:
             List[Dict]: 업로드할 파일 정보 리스트
+            example : 
+                [
+                    {
+                        "local_path": "~/.../TOP/1005/674732/detail/1.jpg",
+                        "relative_path": "detail/1.jpg",
+                        "file_type": "image",
+                        "size": 1024
+                    },
+                    {
+                        "local_path": "~/.../TOP/1005/674732/meta.json",
+                        "relative_path": "meta.json",
+                        "file_type": "meta",
+                        "size": 1024
+                    }
+                ]
         """
         files_to_upload = []
         
@@ -218,9 +271,28 @@ class InitialUploader:
             sub_category: 서브 카테고리 ID
             product_id: 제품 ID
             files_to_upload: 업로드할 파일 목록
-            
+                example : 
+                    [
+                        {
+                            "local_path": "~/.../TOP/1005/674732/detail/1.jpg",
+                            "relative_path": "detail/1.jpg",
+                            "file_type": "image",
+                            "size": 1024
+                        },
+                        {
+                            "local_path": "~/.../TOP/1005/674732/meta.json",
+                            "relative_path": "meta.json",
+                            "file_type": "meta",
+                            "size": 1024
+                        }
+                    ]
         Returns:
             Dict[str, int]: 업로드 결과 통계
+            example : 
+                {
+                    "success": 10,
+                    "failed": 2
+                }
         """
         upload_stats = {'success': 0, 'failed': 0}
         
@@ -269,6 +341,13 @@ class InitialUploader:
             sub_category: 서브 카테고리 ID
             product_id: 제품 ID
             image_file_lists: 폴더별 이미지 파일명 리스트
+                example : 
+                    {
+                        "text" : ["1.jpg", "2.jpg"],
+                        "summary" : ["1.jpg", "2.jpg"],
+                        "segment" : ["1.jpg", "2.jpg"],
+                        "detail" : ["1.jpg", "2.jpg"]
+                    }
             
         Returns:
             tuple[bool, bool]: (처리 성공 여부, 새 제품 여부)
@@ -310,8 +389,15 @@ class InitialUploader:
         업로드 성공 시 카테고리 메타데이터도 업데이트합니다.
         
         Args:
-            product_info: 제품 정보
-            
+            product_info: 제품 정보 \n
+            example :
+                {
+                    "main_category": "TOP",
+                    "sub_category": 1005,
+                    "product_id": "674732",
+                    "local_path": "TOP/1005/674732",
+                    "meta_file": "TOP/1005/674732/meta.json"
+                } 
         Returns:
             bool: 업로드 성공 여부
         """
@@ -324,25 +410,32 @@ class InitialUploader:
         logger.info(f"제품 업로드 시작: {main_category}-{sub_category}-{product_id}")
         
         try:
-            # 1. 메타 데이터 파일 유효성 검사
+            # 1. 업로드할 파일 목록 생성
+            files_to_upload = self.get_files_to_upload(product_dir)
+            logger.info(f"업로드할 파일 개수: {len(files_to_upload)}")
+            
+            # 2. 이미지 파일들을 폴더별로 분류 (DynamoDB 저장용)
+            image_file_lists = self.classify_image_files_by_folder(files_to_upload)
+            
+            # 3. DynamoDB에 아이템 생성 (파일 리스트 포함)
+            db_success, is_new_product = self.aws_manager.create_product_item(
+                main_category, sub_category, product_id, image_file_lists
+            )
+
+            if not is_new_product:
+                logger.info(f"이미 존재하는 제품으로 S3에 업로드 하지 않음: {main_category}-{sub_category}-{product_id}")
+                return True
+            else:
+                # 새 제품인 경우 카운트 증가
+                self._update_new_product_count(main_category, sub_category)
+            
+            # 4. 메타 데이터 파일 유효성 검사(meta.json 파일)
             if not self.validate_meta_file(meta_file):
                 logger.error(f"메타 데이터 파일 유효성 검사 실패: {product_id}")
                 return False
             
-            # 2. 업로드할 파일 목록 생성
-            files_to_upload = self.get_files_to_upload(product_dir)
-            logger.info(f"업로드할 파일 개수: {len(files_to_upload)}")
-            
-            # 3. 이미지 파일들을 폴더별로 분류 (DynamoDB 저장용)
-            image_file_lists = self.classify_image_files_by_folder(files_to_upload)
-            
-            # 4. S3에 파일 업로드
+            # 5. 새 제품인 경우 S3에 파일 업로드
             upload_stats = self.upload_product_files(main_category, sub_category, product_id, files_to_upload)
-            
-            # 5. DynamoDB에 아이템 생성 (파일 리스트 포함)
-            db_success, is_new_product = self.create_dynamodb_item(
-                main_category, sub_category, product_id, image_file_lists
-            )
             
             # 6. 결과 통계 업데이트
             self.stats['total_files'] += len(files_to_upload)
@@ -354,18 +447,7 @@ class InitialUploader:
             
             if success:
                 self.stats['uploaded_products'] += 1
-                logger.info(f"제품 업로드 완료: {sub_category}-{product_id}")
-                
-                # 7. 새 제품인 경우에만 카테고리 메타데이터 업데이트
-                if is_new_product:
-                    metadata_success = self.aws_manager.increment_product_count(main_category, sub_category)
-                    if not metadata_success:
-                        logger.warning(f"카테고리 메타데이터 업데이트 실패: {main_category}-{sub_category}")
-                    else:
-                        logger.info(f"새 제품 추가로 카테고리 카운트 증가: {main_category}-{sub_category}")
-                else:
-                    logger.info(f"기존 제품 업데이트로 카테고리 카운트 유지: {main_category}-{sub_category}")
-                
+                logger.info(f"새 제품 업로드 완료: {sub_category}-{product_id}")
             else:
                 self.stats['failed_products'] += 1
                 logger.error(f"제품 업로드 실패: {sub_category}-{product_id}")
@@ -384,15 +466,34 @@ class InitialUploader:
         
         Args:
             files_to_upload: 업로드할 파일 정보 리스트
-            
+            example : 
+                [
+                    {
+                        "local_path": "~/.../TOP/1005/674732/detail/1.jpg",
+                        "relative_path": "detail/1.jpg",
+                        "file_type": "image",
+                        "size": 1024
+                    }
+                ]
+                
         Returns:
             Dict[str, List[str]]: 폴더별 이미지 파일명 리스트 (빈 폴더 포함)
+            example : 
+                {
+                    "detail": ["1.jpg", "2.jpg"],
+                    "summary": ["1.jpg", "2.jpg"],
+                    "segment": ["1.jpg", "2.jpg"],
+                    "text": ["1.jpg", "2.jpg"]
+                }
         """
         supported_folders = ['detail', 'summary', 'segment', 'text']
         # 모든 지원 폴더를 빈 리스트로 초기화
         image_file_lists = {folder: [] for folder in supported_folders}
         
         for file_info in files_to_upload:
+            if file_info['file_type'] != 'image':
+                continue
+            
             relative_path = file_info['relative_path']
             path_parts = relative_path.split('/')
             
@@ -407,10 +508,7 @@ class InitialUploader:
                     
                     image_file_lists[folder].append(filename)
                     logger.debug(f"이미지 파일 분류: {folder}/{filename}")
-            else:
-                # 루트 레벨 파일은 무시 (meta.json 등)
-                logger.debug(f"루트 레벨 파일 무시: {relative_path}")
-        
+
         # 빈 폴더도 포함하여 반환
         return image_file_lists
     
@@ -433,12 +531,6 @@ class InitialUploader:
             products = products[:max_products]
             logger.info(f"최대 {max_products}개 제품으로 제한")
         
-        # 초기 카테고리 메타데이터 설정
-        logger.info("카테고리 메타데이터 초기화 중...")
-        initial_metadata_success = self.initialize_category_metadata()
-        if not initial_metadata_success:
-            logger.warning("카테고리 메타데이터 초기화 실패")
-        
         # 각 제품 업로드
         for i, product_info in enumerate(products, 1):
             logger.info(f"진행률: {i}/{len(products)} ({i/len(products)*100:.1f}%)")
@@ -452,12 +544,15 @@ class InitialUploader:
             if i % 10 == 0:
                 logger.info(f"중간 통계 - 성공: {self.stats['uploaded_products']}, 실패: {self.stats['failed_products']}")
         
+        # 모든 제품 업로드 완료 후 카테고리 상태 통계 한 번에 업데이트
+        self._update_all_category_stats()
+        
         # 최종 통계
         self.stats['end_time'] = datetime.now()
         duration = self.stats['end_time'] - self.stats['start_time']
         
         logger.info("=" * 60)
-        logger.info("업로드 완료!")
+        logger.info("전체 제품 업로드 완료!")
         logger.info(f"총 소요 시간: {duration}")
         logger.info(f"총 제품 수: {self.stats['total_products']}")
         logger.info(f"성공한 제품 수: {self.stats['uploaded_products']}")
@@ -466,49 +561,31 @@ class InitialUploader:
         logger.info(f"성공한 파일 수: {self.stats['uploaded_files']}")
         logger.info(f"실패한 파일 수: {self.stats['failed_files']}")
         
-        # 최종 카테고리 메타데이터 상태 확인
-        final_metadata = self.aws_manager.get_category_metadata()
-        if final_metadata and 'categories_info' in final_metadata:
-            categories_info = final_metadata['categories_info']
-            if isinstance(categories_info, str):
-                categories_info = json.loads(categories_info)
-            logger.info(f"최종 카테고리 메타데이터 - 총 제품 수: {categories_info.get('total_products', 0)}")
+        # 최종 카테고리 상태 통계 확인
+        try:
+            # 업로드된 카테고리의 상태 통계 확인
+            main_category = self.data_root_path.name
+            all_stats = self.aws_manager.get_all_category_status_stats()
+            
+            if all_stats:
+                total_products_in_stats = sum(stats.get('total', 0) for stats in all_stats.values())
+                logger.info(f"최종 상태 통계 - 총 제품 수: {total_products_in_stats}")
+                
+                # 메인 카테고리별 통계 출력
+                for category_key, stats in all_stats.items():
+                    if category_key.startswith(main_category):
+                        logger.info(f"카테고리 {category_key}: 전체 {stats['total']} | 미정 {stats['pending']} | 완료 {stats['completed']} | 보류 {stats['pass']}")
+            else:
+                logger.warning("상태 통계 데이터를 찾을 수 없습니다")
+                
+        except Exception as e:
+            logger.error(f"최종 상태 통계 확인 중 오류: {e}")
         
         logger.info("=" * 60)
         
         return self.stats
     
-    def initialize_category_metadata(self) -> bool:
-        """
-        카테고리 메타데이터를 초기화합니다.
-        기존 메타데이터가 있으면 그것을 유지하고, 없으면 빈 구조로 초기화합니다.
-        
-        Returns:
-            bool: 초기화 성공 여부
-        """
-        try:
-            # 기존 메타데이터 조회
-            existing_metadata = self.aws_manager.get_category_metadata()
-            
-            if existing_metadata is None:
-                # 메타데이터가 없으면 빈 구조로 초기화
-                logger.info("카테고리 메타데이터가 없습니다. 빈 구조로 초기화합니다.")
-                empty_categories = {
-                    "main_categories": [],
-                    "sub_categories": {},
-                    "product_counts": {},
-                    "total_products": 0
-                }
-                success = self.aws_manager.update_category_metadata(empty_categories)
-                logger.info("빈 카테고리 메타데이터 생성 완료")
-                return success
-            else:
-                logger.info("기존 카테고리 메타데이터를 사용합니다")
-                return True
-                
-        except Exception as e:
-            logger.error(f"카테고리 메타데이터 초기화 실패: {e}")
-            return False
+
 
 
 def main():
@@ -531,13 +608,12 @@ def main():
         profile: str = None
         max_products: int = 2
         dry_run: bool = False
-        main_category: str = 'TOP'
-        
     
     try:
         # 데이터 경로 확인
         HOME_DIR = os.getcwd()
         data_path = Path(HOME_DIR) / args.data_path
+        main_category = args.data_path
         if not data_path.exists():
             logger.error(f"데이터 경로가 존재하지 않습니다: {data_path}")
             return 1

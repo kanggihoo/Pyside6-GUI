@@ -5,23 +5,48 @@
 """
 
 import json
-from typing import Optional, Tuple
+from typing import Optional, Dict, List
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                                QComboBox, QPushButton, QGroupBox, QMessageBox,
                                QTextEdit, QSplitter)
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QFont
+from aws_manager import AWSManager
+from dataclasses import dataclass , field
+from typing import Annotated
+@dataclass
+class CategoryStats:
+    total: int
+    completed: int
+    passed: int
+    pending: int
 
+@dataclass
+class CategoryInfo:
+    """
+    카테고리 정보 클래스
+        example : 
+        {
+            "categories": {
+                "TOP": {1005: CategoryStats(total=150, completed=25, passed=5, pending=120),
+                        1006: CategoryStats(total=150, completed=25, passed=5, pending=120)},
+                "BOTTOM": {1007: CategoryStats(total=150, completed=25, passed=5, pending=120),
+                           1008: CategoryStats(total=150, completed=25, passed=5, pending=120)}
+            },
+            "total_products": 300
+        }
+    """
+    categories: Dict[str, Dict[int, CategoryStats]] = field(default_factory=dict)
+    total_products: int = 0
 
 class CategorySelectionDialog(QDialog):
-    """카테고리 선택 다이얼로그
-        - category_selected 시그널: 카테고리 선택 완료 시 데이터 emit => (str, int) : (main_category, sub_category)
-        - gui_main.py 의 MainWindow 클래스의 on_category_selected 함수에게 데이터 전달 
-    """
+    """카테고리 선택 다이얼로그"""
     
-    category_selected = Signal(str, int)  # main_category, sub_category
+    category_selected:Signal = Signal(str, int) 
+    """category_selected 시그널: 카테고리 선택 완료 시 데이터 emit => (str, int) : (main_category, sub_category)"""
+
     
-    def __init__(self, aws_manager, parent=None):
+    def __init__(self, aws_manager:AWSManager, parent=None):
         super().__init__(parent)
         self.aws_manager = aws_manager
         self.selected_main_category = None
@@ -147,41 +172,83 @@ class CategorySelectionDialog(QDialog):
     
     def load_categories(self):
         """
-        카테고리 정보 로드
-            - 카테고리 정보는 DynamoDB에서 조회(맨 처음 다이얼로그 실행 시, 새로고침 버튼 클릭 시)
+        카테고리 정보 로드 - 새로운 상태 통계 시스템 사용
+            - 카테고리 정보는 DynamoDB 상태 통계에서 조회(맨 처음 다이얼로그 실행 시, 새로고침 버튼 클릭 시)
         """
         try:
-            # DynamoDB에서 카테고리 메타데이터 조회
-            metadata = self.aws_manager.get_category_metadata()
+            # DynamoDB에서 모든 카테고리 상태 통계 조회
+            all_stats = self.aws_manager.get_all_category_status_stats()
             
-            if metadata is None:
+            if not all_stats:
                 QMessageBox.warning(self, "카테고리 정보 없음", 
-                                  "카테고리 메타데이터가 없습니다.\n초기 데이터 업로드를 먼저 실행해주세요.")
+                                  "카테고리 상태 통계가 없습니다.\n초기 데이터 업로드를 먼저 실행해주세요.")
                 return
             
-            # categories_info 파싱
-            categories_info = metadata.get('categories_info')
-            if isinstance(categories_info, str):
-                categories_info = json.loads(categories_info)
-            
+            # 상태 통계에서 카테고리 정보 구성
+            categories_info = self.build_categories_info_from_stats(all_stats)
             self.categories_info = categories_info
             
             # 메인 카테고리 콤보박스 업데이트
             self.main_category_combo.clear()
             self.main_category_combo.addItem("-- 선택하세요 --", None)
             
-            main_categories = categories_info.get('main_categories', [])
+            main_categories = categories_info.categories.keys()
             for main_category in main_categories:
                 self.main_category_combo.addItem(main_category, main_category)
             
             # 통계 정보 업데이트
             self.update_stats_info()
             
-            # 상세 정보 업데이트
-            self.update_detail_info()
+           
             
         except Exception as e:
             QMessageBox.critical(self, "오류", f"카테고리 정보 로드 중 오류가 발생했습니다:\n{str(e)}")
+    
+    def build_categories_info_from_stats(self, all_stats: dict) -> CategoryInfo:
+        """
+        상태 통계에서 카테고리 정보를 구성합니다.
+        
+        Args:
+            all_stats: get_all_category_status_stats() 결과
+                example : 
+                {
+                    'TOP_1005': {
+                        'pending': 120,
+                        'completed': 25,
+                        'pass': 5,
+                        'total': 150
+                    }
+                }
+            
+        Returns:
+            CategoryInfo: 카테고리별 통계 정보를 포함하는 객체
+        """
+        result = CategoryInfo()
+        
+        # 상태 통계에서 카테고리 정보 추출
+        for category_key, stats in all_stats.items():
+            try:
+                main_category, sub_category_str = category_key.split('_')
+                sub_category = int(sub_category_str)
+                
+                if main_category not in result.categories:
+                    result.categories[main_category] = {}
+                
+                category_stats = CategoryStats(
+                    total=stats.get('total', 0),
+                    completed=stats.get('completed', 0),
+                    passed=stats.get('pass', 0),
+                    pending=stats.get('pending', 0)
+                )
+                
+                result.categories[main_category][sub_category] = category_stats
+                result.total_products += category_stats.total
+                
+            except (ValueError, IndexError) as e:
+                print(f"카테고리 키 파싱 오류: {category_key} - {e}")
+                continue
+        
+        return result
     
     @Slot(str)
     def on_main_category_changed(self, main_category_text:str):
@@ -192,12 +259,15 @@ class CategorySelectionDialog(QDialog):
         main_category = self.main_category_combo.currentData()
         if main_category and self.categories_info:
             # 서브 카테고리 목록 업데이트
-            sub_categories = self.categories_info.get('sub_categories', {}).get(main_category, [])
+            sub_categories = self.categories_info.categories[main_category].keys()
             
             for sub_category in sub_categories:
                 # 제품 수 정보도 함께 표시
-                product_count = self.categories_info.get('product_counts', {}).get(main_category, {}).get(str(sub_category), 0)
-                display_text = f"{sub_category} ({product_count}개 제품)"
+                product_count = self.categories_info.categories[main_category][sub_category].total
+                completed_count = self.categories_info.categories[main_category][sub_category].completed
+                passed_count = self.categories_info.categories[main_category][sub_category].passed
+                pending_count = self.categories_info.categories[main_category][sub_category].pending
+                display_text = f"{sub_category} ({product_count}개 제품) (미정: {pending_count:,}, 완료: {completed_count:,}, 보류: {passed_count:,})"
                 self.sub_category_combo.addItem(display_text, sub_category)
         
         self.selected_main_category = main_category
@@ -217,9 +287,7 @@ class CategorySelectionDialog(QDialog):
             # 선택된 카테고리의 제품 수 정보
             product_count = 0
             if self.categories_info:
-                product_count = self.categories_info.get('product_counts', {}).get(
-                    self.selected_main_category, {}
-                ).get(str(self.selected_sub_category), 0)
+                product_count = self.categories_info.categories[self.selected_main_category][self.selected_sub_category].total
             
             info_text = f"""
                 선택된 카테고리:
@@ -242,33 +310,77 @@ class CategorySelectionDialog(QDialog):
             self.selection_info_label.setStyleSheet("padding: 10px; background-color: #f8f9fa; color: #495057; border: 1px solid #dee2e6; border-radius: 5px;")
     
     def update_stats_info(self):
-        """통계 정보 업데이트"""
+        """통계 정보 업데이트 - 새로운 상태 통계 시스템 사용"""
         if not self.categories_info:
             self.stats_label.setText("카테고리 정보가 없습니다.")
             return
         
-        total_products = self.categories_info.get('total_products', 0)
-        main_categories = self.categories_info.get('main_categories', [])
-        product_counts = self.categories_info.get('product_counts', {})
-        
-        stats_text = f"전체 통계:\n"
-        stats_text += f"• 총 제품 수: {total_products:,}개\n"
-        stats_text += f"• 메인 카테고리 수: {len(main_categories)}개\n\n"
-        
-        stats_text += "카테고리별 제품 수:\n"
-        for main_cat in main_categories:
-            cat_total = sum(product_counts.get(main_cat, {}).values())
-            stats_text += f"• {main_cat}: {cat_total:,}개\n"
-        
-        self.stats_label.setText(stats_text)
+        try:
+            # 전체 통계 계산
+            total_products = self.categories_info.total_products
+            main_categories = self.categories_info.categories.keys()
+            
+            # 전체 상태별 통계 계산
+            total_pending = 0
+            total_completed = 0
+            total_passed = 0
+            
+            # 카테고리별 통계 문자열 생성
+            category_stats_lines = []
+            
+            for main_cat, sub_cats in self.categories_info.categories.items():
+                # 메인 카테고리별 상태 통계 계산
+                cat_total = 0
+                cat_pending = 0
+                cat_completed = 0
+                cat_passed = 0
+                
+                # 서브 카테고리 통계 라인들
+                sub_cat_lines = []
+                
+                for sub_cat, stats in sub_cats.items():
+                    # 메인 카테고리 합계에 더하기
+                    cat_total += stats.total
+                    cat_pending += stats.pending
+                    cat_completed += stats.completed
+                    cat_passed += stats.passed
+                    
+                    # 전체 통계에 더하기
+                    total_pending += stats.pending
+                    total_completed += stats.completed
+                    total_passed += stats.passed
+                    
+                    # 서브 카테고리 통계 라인 추가
+                    sub_cat_lines.append(
+                        f"    └ {sub_cat}: {stats.total:,}개 (미정: {stats.pending:,}, 완료: {stats.completed:,}, 보류: {stats.passed:,})"
+                    )
+                
+                # 메인 카테고리 통계 라인 추가
+                category_stats_lines.append(
+                    f"• {main_cat}: {cat_total:,}개 (미정: {cat_pending:,}, 완료: {cat_completed:,}, 보류: {cat_passed:,})"
+                )
+                # 서브 카테고리 라인들 추가
+                category_stats_lines.extend(sub_cat_lines)
+            
+            # 전체 통계 문자열 생성
+            stats_text = "전체 통계:\n"
+            stats_text += f"• 총 제품 수: {total_products:,}개\n"
+            stats_text += f"• 메인 카테고리 수: {len(main_categories)}개\n"
+            stats_text += f"• 미정: {total_pending:,}개\n"
+            stats_text += f"• 완료: {total_completed:,}개\n"
+            stats_text += f"• 보류: {total_passed:,}개\n\n"
+            
+            # # 카테고리별 통계 추가
+            # stats_text += "카테고리별 제품 수:\n"
+            detail_text = "\n".join(category_stats_lines)
+            
+            self.stats_label.setText(stats_text)
+            self.detail_text.setPlainText(detail_text)
+            
+        except Exception as e:
+            self.stats_label.setText(f"통계 정보 로드 오류: {str(e)}")
+            print(f"통계 정보 업데이트 오류: {e}")
     
-    def update_detail_info(self):
-        """상세 정보 업데이트"""
-        if self.categories_info:
-            detail_json = json.dumps(self.categories_info, indent=2, ensure_ascii=False)
-            self.detail_text.setPlainText(detail_json)
-        else:
-            self.detail_text.setPlainText("카테고리 정보가 없습니다.")
     
     def check_selection_complete(self):
         """선택 완료 여부 확인"""
@@ -283,10 +395,4 @@ class CategorySelectionDialog(QDialog):
             self.category_selected.emit(self.selected_main_category, self.selected_sub_category)
             self.accept()
         else:
-            QMessageBox.warning(self, "선택 필요", "메인 카테고리와 서브 카테고리를 모두 선택해주세요.")
-    
-    def get_selected_category(self) -> Optional[Tuple[str, int]]:
-        """선택된 카테고리 반환"""
-        if self.selected_main_category and self.selected_sub_category:
-            return (self.selected_main_category, self.selected_sub_category)
-        return None 
+            QMessageBox.warning(self, "선택 필요", "메인 카테고리와 서브 카테고리를 모두 선택해주세요.") 

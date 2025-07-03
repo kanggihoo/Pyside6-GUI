@@ -9,7 +9,7 @@ import json
 import os
 from datetime import datetime, timezone
 from typing import Any, List, Dict
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import ClientError
 from pathlib import Path
 import mimetypes
 import logging
@@ -37,6 +37,7 @@ class AWSManager:
         # 클라이언트 초기화
         self.s3_client = boto3.client('s3', region_name=region_name)
         self.dynamodb_client = boto3.client('dynamodb', region_name=region_name)
+        self.sts_client = boto3.client('sts', region_name=region_name)
         
         # 설정 로드
         self.config = self._load_config()
@@ -82,6 +83,7 @@ class AWSManager:
         
         Args:
             item: DynamoDB에서 쿼리 반환결과인 Item 키에 대한 데이터 (타입 정보 포함)
+                example : {'속성이름': {'데이터타입': '값'}, ...}
             
         Returns:
             dict: 변환된 일반 딕셔너리
@@ -141,7 +143,7 @@ class AWSManager:
             relative_path: 상대 경로 (예: 'detail/0.jpg', 'meta.json')
             
         Returns:
-            str: S3 객체 키 (예: 'main_category/1005/79823/detail/0.jpg')
+            str: S3 객체 키 (예: 'main_category/sub_category/product_id/relative_path')
         """
         return f"{main_category}/{sub_category}/{product_id}/{relative_path}"
     
@@ -328,25 +330,6 @@ class AWSManager:
             logger.error(f"meta.json 처리 중 예상치 못한 오류 {product_id}: {e}")
             return None
 
-    def delete_s3_object(self, s3_key: str) -> bool:
-        """
-        S3 객체를 삭제합니다.
-        
-        Args:
-            s3_key: 삭제할 객체 키
-            
-        Returns:
-            bool: 삭제 성공 여부
-        """
-        try:
-            self.s3_client.delete_object(Bucket=self.bucket_name, Key=s3_key)
-            logger.info(f"S3 객체 삭제 성공: {s3_key}")
-            return True
-            
-        except ClientError as e:
-            logger.error(f"S3 객체 삭제 실패 {s3_key}: {e}")
-            return False
-    
     # =============================================================================
     # DynamoDB 관련 함수들
     # =============================================================================
@@ -355,14 +338,20 @@ class AWSManager:
                            file_lists: dict[str, list[str]] = None) -> tuple[bool, bool]:
         """
         DynamoDB에 제품 아이템을 생성하거나 업데이트합니다.
-        기존 아이템이 있으면 덮어쓰고, 없으면 새로 생성합니다.
+        기존 아이템이 있으면 덮어쓰지 않고 False를 반환하고, 없으면 새로 생성합니다.
         
         Args:
             main_category: 메인 카테고리
             sub_category: 서브 카테고리 ID
             product_id: 제품 ID
-            file_lists: 폴더별 파일 리스트 (선택적)
-            
+            file_lists: 폴더별 파일 리스트 
+                example : 
+                    {
+                        "text" : ["1.jpg", "2.jpg"],
+                        "summary" : ["1.jpg", "2.jpg"],
+                        "segment" : ["1.jpg", "2.jpg"],
+                        "detail" : ["1.jpg", "2.jpg"]
+                    }
         Returns:
             tuple[bool, bool]: (처리 성공 여부, 새 제품 여부)
         """
@@ -371,6 +360,10 @@ class AWSManager:
             existing_item = self.get_product_detail(sub_category, product_id)
             is_new_product = existing_item is None
             
+            if existing_item:
+                logger.info(f"기존 아이템 존재 dynamoDB 데이터 추가하지 않음: {main_category}-{sub_category}-{product_id}")
+                return True, False
+
             current_time = self._get_current_timestamp()
             
             # DynamoDB client용 아이템 구성 (타입 명시 필요)
@@ -380,35 +373,25 @@ class AWSManager:
                 'product_id': {'S': product_id}, # 정렬 키 
                 'current_status': {'S': 'PENDING'}, # GSI 인덱스의 파티션 키 
                 'last_updated_at': {'S': current_time}, # GSI 인덱스의 정렬 키 
+                'created_at': {'S': current_time}
             }
-            
-            # 새 제품이면 created_at 추가, 기존 제품이면 생략 (기존 값 유지)
-            if is_new_product:
-                item['created_at'] = {'S': current_time}
             
             # 파일 리스트 추가 (빈 리스트 포함)
             if file_lists:
                 supported_folders = ['detail', 'summary', 'segment', 'text']
                 for folder in supported_folders:
-                    if folder in file_lists:
-                        # 파일명 리스트를 DynamoDB List로 저장 (빈 리스트 허용)
-                        string_list = [{'S': filename} for filename in file_lists[folder]]
-                        item[folder] = {'L': string_list}
+                    # 파일명 리스트를 DynamoDB List로 저장 (빈 리스트 허용)
+                    string_list = [{'S': filename} for filename in file_lists[folder]]
+                    item[folder] = {'L': string_list}
             
+            # 제품 아이템 저장
             self.dynamodb_client.put_item(
                 TableName=self.table_name,
                 Item=item
             )
             
-            if is_new_product:
-                logger.info(f"DynamoDB 새 아이템 생성 완료: {main_category}-{sub_category}-{product_id}")
-            else:
-                logger.info(f"DynamoDB 기존 아이템 업데이트 완료: {main_category}-{sub_category}-{product_id}")
-            
-            if file_lists:
-                logger.debug(f"파일 리스트 포함하여 저장: {file_lists}")
-            
-            return True, is_new_product
+            logger.info(f"DynamoDB 새 제품 추가됨: {main_category}-{sub_category}-{product_id}")
+            return True, True
             
         except ClientError as e:
             logger.error(f"DynamoDB 아이템 처리 실패 {main_category}-{sub_category}-{product_id}: {e}")
@@ -504,39 +487,110 @@ class AWSManager:
             return [], None
     
     def update_curation_result(self, sub_category: int, product_id: str, 
-                            curation_data: dict[str, Any], 
-                            completed_by: str|None = None) -> bool:
+                            representative_images: dict[str, Any],
+                            color_variant_images: dict[str, Any],
+                          completed_by: str|None = None) -> bool:
         """
         DynamoDB에 큐레이션 결과를 업데이트합니다.
         
         Args:
             sub_category: 서브 카테고리 ID
             product_id: 제품 ID
-            curation_data: 큐레이션 결과 데이터
+            representative_images: 대표 이미지 딕셔너리 (model_wearing, front_cutout, back_cutout)
+            color_variant_images: 색상 변형 이미지 딕셔너리
             completed_by: 작업자 ID
             
         Returns:
             bool: 업데이트 성공 여부
         """
         try:
+            
+            # 기존 제품 정보 조회 (메인 카테고리 확인용)
+            existing_product = self.get_product_detail(sub_category, product_id)
+            if not existing_product:
+                logger.error(f"제품을 찾을 수 없습니다: {sub_category}-{product_id}")
+                return False
+            
             current_time = self._get_current_timestamp()
             
-            update_expression = "SET current_status = :status, last_updated_at = :timestamp"
+            # SET 표현식 (새로운 값 설정)
+            set_expression_parts = ["current_status = :status", "last_updated_at = :timestamp"]
             expression_values = {
                 ':status': {'S': 'COMPLETED'},
                 ':timestamp': {'S': current_time}
             }
             
-            # 큐레이션 결과 추가
-            if curation_data:
-                update_expression += ", representative_assets = :assets"
-                expression_values[':assets'] = {'S': json.dumps(curation_data, ensure_ascii=False)}
+            # 큐레이션 결과 추가 - DynamoDB Map 타입으로 저장
+            set_expression_parts.append("representative_assets = :assets")
+                
+            # 입력받은 데이터를 DynamoDB 저장용 구조로 변환
+            dynamodb_assets = {}
+                
+            # model_wearing -> model
+            if 'model_wearing' in representative_images:
+                model_info = representative_images["model_wearing"]
+                model_folder_name = model_info.get('folder', '')
+                model_filename = model_info.get('filename', '')
+                if model_folder_name and model_filename:
+                    dynamodb_assets['model'] = {'S': f"{model_folder_name}/{model_filename}"}
             
-            # 작업자 정보 추가
-            if completed_by:
-                update_expression += ", completed_by = :completed_by"
-                expression_values[':completed_by'] = {'S': completed_by}
+            # front_cutout -> front
+            if 'front_cutout' in representative_images:
+                front_info = representative_images["front_cutout"]
+                front_folder_name = front_info.get('folder', '')
+                front_filename = front_info.get('filename', '')
+                if front_folder_name and front_filename:
+                    dynamodb_assets['front'] = {'S': f"{front_folder_name}/{front_filename}"}
             
+            # back_cutout -> back
+            if 'back_cutout' in representative_images:
+                back_info = representative_images["back_cutout"]
+                back_folder_name = back_info.get('folder', '')
+                back_filename = back_info.get('filename', '')
+                if back_folder_name and back_filename:
+                    dynamodb_assets['back'] = {'S': f"{back_folder_name}/{back_filename}"}
+            
+            # color_variant_images -> color_variant (리스트)
+            color_variant_paths = []
+            for image_key, color_variant_info in color_variant_images.items():
+                folder_name = color_variant_info.get('folder', '')
+                filename = color_variant_info.get('filename', '')
+                if folder_name and filename:
+                    color_variant_paths.append({'S': f"{folder_name}/{filename}"})
+            
+            if color_variant_paths:
+                dynamodb_assets['color_variant'] = {'L': color_variant_paths}
+            
+            expression_values[':assets'] = {'M': dynamodb_assets}
+            
+            # 작업자 정보 추가 (completed_by가 제공되지 않으면 현재 AWS 사용자 사용)
+            if completed_by is None:
+                completed_by = self.get_current_aws_user()
+            
+            set_expression_parts.append("completed_by = :completed_by")
+            expression_values[':completed_by'] = {'S': completed_by}
+            
+            # REMOVE 표현식 (불필요한 필드 제거)
+            remove_expression_parts = []
+            
+            # PASS 상태에서 COMPLETED로 변경하는 경우 pass_reason 필드 제거
+            if existing_product.get('current_status') == 'PASS':
+                if 'pass_reason' in existing_product:
+                    remove_expression_parts.append("pass_reason")
+            
+            # COMPLETED 상태에서 COMPLETED로 변경하는 경우 큐레이션 관련 필드들 제거
+            elif existing_product.get('current_status') == 'COMPLETED':
+                # representative_assets와 completed_by는 새로 설정하므로 제거하지 않음
+                pass
+            
+            # 업데이트 표현식 구성
+            update_expression = f"SET {', '.join(set_expression_parts)}"
+            
+            # REMOVE 표현식이 있는 경우 추가
+            if remove_expression_parts:
+                update_expression += f" REMOVE {', '.join(remove_expression_parts)}"
+            
+            # 제품 상태 업데이트
             self.dynamodb_client.update_item(
                 TableName=self.table_name,
                 Key={
@@ -548,10 +602,87 @@ class AWSManager:
             )
             
             logger.info(f"DynamoDB 큐레이션 결과 업데이트 성공: {sub_category}-{product_id}")
+            if remove_expression_parts:
+                logger.info(f"제거된 필드: {remove_expression_parts}")
             return True
             
         except ClientError as e:
             logger.error(f"DynamoDB 큐레이션 결과 업데이트 실패 {sub_category}-{product_id}: {e}")
+            return False
+    
+    def update_product_status_to_pass(self, sub_category: int, product_id: str, pass_reason: str = None) -> bool:
+        """
+        DynamoDB에서 상품 상태를 PASS로 업데이트합니다.
+        이미지 데이터가 이상하거나 보류가 필요한 경우 사용됩니다.
+        
+        Args:
+            sub_category: 서브 카테고리 ID
+            product_id: 제품 ID
+            pass_reason: 보류 처리 이유 (선택사항)
+            
+        Returns:
+            bool: 업데이트 성공 여부
+        """
+        try:
+            # 기존 제품 정보 조회 (메인 카테고리 확인용)
+            existing_product = self.get_product_detail(sub_category, product_id)
+            if not existing_product:
+                logger.error(f"제품을 찾을 수 없습니다: {sub_category}-{product_id}")
+                return False
+            
+            current_time = self._get_current_timestamp()
+            
+            # SET 표현식 (새로운 값 설정)
+            set_expression_parts = ["current_status = :status", "last_updated_at = :timestamp"]
+            expression_values = {
+                ':status': {'S': 'PASS'},
+                ':timestamp': {'S': current_time}
+            }
+            
+            # pass_reason이 제공된 경우 추가
+            if pass_reason:
+                set_expression_parts.append("pass_reason = :reason")
+                expression_values[':reason'] = {'S': pass_reason}
+            
+            # 작업자 정보 추가 (PASS 처리도 누가 했는지 기록)
+            completed_by = self.get_current_aws_user()
+            set_expression_parts.append("completed_by = :completed_by")
+            expression_values[':completed_by'] = {'S': completed_by}
+            
+            # REMOVE 표현식 (불필요한 필드 제거)
+            remove_expression_parts = []
+            
+            # COMPLETED 상태에서 COMPLETED로 변경하는 경우 큐레이션 관련 필드들 제거
+            if existing_product.get('current_status') == 'COMPLETED':
+                if 'representative_assets' in existing_product:
+                    remove_expression_parts.append("representative_assets")
+                # completed_by는 PASS 처리에서도 사용하므로 제거하지 않음
+            
+            # 업데이트 표현식 구성
+            update_expression = f"SET {', '.join(set_expression_parts)}"
+            
+            # REMOVE 표현식이 있는 경우 추가
+            if remove_expression_parts:
+                update_expression += f" REMOVE {', '.join(remove_expression_parts)}"
+            
+            # 제품 상태 업데이트
+            self.dynamodb_client.update_item(
+                TableName=self.table_name,
+                Key={
+                    'sub_category': {'N': str(sub_category)},
+                    'product_id': {'S': product_id}
+                },
+                UpdateExpression=update_expression,
+                ExpressionAttributeValues=expression_values
+            )
+            
+            logger.info(f"DynamoDB 상품 상태 PASS 업데이트 성공: {sub_category}-{product_id}")
+            if remove_expression_parts:
+                logger.info(f"제거된 필드: {remove_expression_parts}")
+            return True
+            
+        except ClientError as e:
+            logger.error(f"DynamoDB 상품 상태 PASS 업데이트 실패 {sub_category}-{product_id}: {e}")
             return False
     
     def update_product_file_lists(self, sub_category: int, product_id: str, 
@@ -644,29 +775,6 @@ class AWSManager:
             logger.error(f"파일 리스트 조회 실패 {sub_category}-{product_id}: {e}")
             return {}
     
-    def construct_s3_keys_from_file_lists(self, main_category: str, sub_category: int, 
-                                        product_id: str, file_lists: dict[str, list[str]]) -> list[str]:
-        """
-        파일 리스트로부터 S3 객체 키들을 구성합니다.
-        
-        Args:
-            main_category: 메인 카테고리
-            sub_category: 서브 카테고리 ID
-            product_id: 제품 ID
-            file_lists: 폴더별 파일 리스트
-            
-        Returns:
-            List[str]: S3 객체 키 리스트
-        """
-        s3_keys = []
-        
-        for folder, filenames in file_lists.items():
-            for filename in filenames:
-                s3_key = f"{main_category}/{sub_category}/{product_id}/{folder}/{filename}"
-                s3_keys.append(s3_key)
-        
-        return s3_keys
-    
     def get_product_detail(self, sub_category: int, product_id: str) -> dict[str, Any]|None:
         """
         특정 제품의 상세 정보를 조회합니다.
@@ -702,313 +810,284 @@ class AWSManager:
             return None
     
     # =============================================================================
-    # 카테고리 메타데이터 관리 함수들
+    # 카테고리별 상태 통계 관리 함수들
     # =============================================================================
     
-    def get_category_metadata(self) -> dict[str, Any]|None:
+    def get_category_status_stats(self, main_category: str, sub_category: int) -> dict[str, Any] | None:
         """
-        DynamoDB에서 카테고리 메타데이터를 조회합니다. 
-        - 파티션 키인 sub_category는 0으로 고정되어 있고, 정렬키인 product_id는 CATEGORY_METADATA로 입력한경우 해당 table의 메타데이터를 조회합니다.
-        - 메타데이터는 categories_info 항목에 저장되어 있습니다.
-            - main_categories: 메인 카테고리 목록
-            - sub_categories: 서브 카테고리 목록
-            - product_counts: 카테고리별 제품 수
-            - total_products: 총 제품 수
+        특정 카테고리의 상태별 통계를 조회합니다.
+        
+        Args:
+            main_category: 메인 카테고리
+            sub_category: 서브 카테고리
+            
         Returns:
-            Optional[Dict]: 카테고리 메타데이터 (없으면 None)
+            Dict: 상태별 통계 정보 또는 None
         """
         try:
+            stats_id = f"STATUS_STATS_{main_category}_{sub_category}"
+            
             response = self.dynamodb_client.get_item(
                 TableName=self.table_name,
                 Key={
-                    'sub_category': {'N': '0'},  # 메타데이터 식별자
-                    'product_id': {'S': 'CATEGORY_METADATA'}
+                    'sub_category': {'N': '0'},
+                    'product_id': {'S': stats_id}
                 }
             )
             
             item = response.get('Item')
             if item:
                 converted_item = self._convert_dynamodb_item(item)
-                logger.info("카테고리 메타데이터 조회 성공")
                 return converted_item
             else:
-                logger.info("카테고리 메타데이터가 존재하지 않습니다")
                 return None
                 
         except ClientError as e:
-            logger.error(f"카테고리 메타데이터 조회 실패: {e}")
+            logger.error(f"카테고리 상태 통계 조회 실패 {main_category}-{sub_category}: {e}")
             return None
-    
-    def update_category_metadata(self, categories_info: dict[str, Any]) -> bool:
+
+    def initialize_category_status_stats(self, main_category: str, sub_category: int) -> bool:
         """
-        DynamoDB에 카테고리 메타데이터를 업데이트합니다.
-        
+        새 카테고리의 상태별 통계를 초기화합니다. , dynamoDB에 특수 파티션, 정렬키로 지정하여 메인/서브 카테고리에 포함되는 제품에 대한 통계를 관리합니다.
+            example : 
+            {
+                'sub_category': {'N': '0'},
+                'product_id': {'S': stats_id},
+                'main_category': {'S': main_category},
+                'target_sub_category': {'N': str(sub_category)},
+                'pending_count': {'N': '0'},
+                'completed_count': {'N': '0'},
+                'pass_count': {'N': '0'},
+                'total_products': {'N': '0'},
+                'last_updated_at': {'S': current_time}
+            }
         Args:
-            categories_info: 카테고리 정보 딕셔너리
+            main_category: 메인 카테고리
+            sub_category: 서브 카테고리
             
         Returns:
-            bool: 업데이트 성공 여부
+            bool: 초기화 성공 여부
         """
         try:
+            stats_id = f"STATUS_STATS_{main_category}_{sub_category}"
             current_time = self._get_current_timestamp()
             
-            # 메타데이터 항목 구성 (다른 아이템들과 필드명 통일)
-            item = {
-                'sub_category': {'N': '0'},  # 메타데이터 식별자
-                'product_id': {'S': 'CATEGORY_METADATA'},
-                'categories_info': {'S': json.dumps(categories_info, ensure_ascii=False)},
-                'last_updated_at': {'S': current_time}  # 다른 아이템들과 일관성 유지
+            # # 기존 통계가 있는지 확인
+            # existing_stats = self.get_category_status_stats(main_category, sub_category)
+            # if existing_stats:
+            #     logger.info(f"카테고리 상태 통계가 이미 존재합니다: {main_category}-{sub_category}")
+            #     return True
+            
+            # 초기 통계 데이터 구성 (개별 필드로 저장)
+            initial_stats = {
+                'sub_category': {'N': '0'},
+                'product_id': {'S': stats_id},
+                'main_category': {'S': main_category},
+                'target_sub_category': {'N': str(sub_category)},
+                'pending_count': {'N': '0'},
+                'completed_count': {'N': '0'},
+                'pass_count': {'N': '0'},
+                'total_products': {'N': '0'},
+                'last_updated_at': {'S': current_time}
             }
             
             self.dynamodb_client.put_item(
                 TableName=self.table_name,
-                Item=item
+                Item=initial_stats
             )
             
-            logger.info("카테고리 메타데이터 업데이트 성공")
+            logger.info(f"카테고리 상태 통계 초기화 성공: {main_category}-{sub_category}")
             return True
             
         except ClientError as e:
-            logger.error(f"카테고리 메타데이터 업데이트 실패: {e}")
+            logger.error(f"카테고리 상태 통계 초기화 실패 {main_category}-{sub_category}: {e}")
             return False
-    
-    def collect_category_statistics_from_s3(self) -> dict[str, Any]:
+
+    def update_category_status_stats_atomic(self, main_category: str, sub_category: int, 
+                                          status_changes: dict[str, int]) -> bool:
         """
-        S3에서 현재 존재하는 카테고리 구조와 제품 수를 수집합니다.
+        카테고리의 상태별 통계를 원자적(atomic)으로 업데이트합니다. , dynamoDB의 update_item 함수 이용
+        DynamoDB의 ADD 연산을 사용하여 동시성 문제를 해결합니다.
         
+        Args:
+            main_category: 메인 카테고리
+            sub_category: 서브 카테고리
+            status_changes: 상태별 변화량 {'PENDING': -1, 'COMPLETED': 1}
+            
         Returns:
-            Dict: 카테고리 통계 정보
+            bool: 업데이트 성공 여부
         """
         try:
-            categories_info = {
-                "main_categories": [],
-                "sub_categories": {},
-                "product_counts": {},
-                "total_products": 0
+            stats_id = f"STATUS_STATS_{main_category}_{sub_category}"
+            current_time = self._get_current_timestamp()
+            
+            # # 통계가 없으면 초기화
+            # if not self.get_category_status_stats(main_category, sub_category):
+            #     if not self.initialize_category_status_stats(main_category, sub_category):
+            #         return False
+            
+            # 업데이트 표현식 구성
+            update_expression_parts = ["last_updated_at = :timestamp"]
+            expression_values = {':timestamp': {'S': current_time}}
+            
+            total_change = 0
+            
+            # 상태별 증감 연산 추가
+            status_field_mapping = {
+                'PENDING': 'pending_count',
+                'COMPLETED': 'completed_count', 
+                'PASS': 'pass_count'
             }
             
-            # 메인 카테고리 조회
-            response = self.s3_client.list_objects_v2(
-                Bucket=self.bucket_name,
-                Delimiter='/'
+            # field_name : dynamoDB에 저장되는 실제 필드명
+            for status, change in status_changes.items():
+                if change != 0 and status in status_field_mapping:
+                    field_name = status_field_mapping[status]
+                    update_expression_parts.append(f"{field_name} = {field_name} + :change_{status.lower()}")
+                    expression_values[f':change_{status.lower()}'] = {'N': str(change)}
+                    total_change += change
+            
+            if total_change != 0:
+                update_expression_parts.append("total_products = total_products + :total_change")
+                expression_values[':total_change'] = {'N': str(total_change)}
+            
+            if len(update_expression_parts) == 1:  # timestamp만 있는 경우
+                logger.debug(f"상태 변화 없음: {main_category}-{sub_category}")
+                return True
+            
+            update_expression = "SET " + ", ".join(update_expression_parts)
+            
+            # Atomic 업데이트 실행
+            self.dynamodb_client.update_item(
+                TableName=self.table_name,
+                Key={
+                    'sub_category': {'N': '0'},
+                    'product_id': {'S': stats_id}
+                },
+                UpdateExpression=update_expression,
+                ExpressionAttributeValues=expression_values
             )
             
-            for prefix in response.get('CommonPrefixes', []):
-                main_category = prefix['Prefix'].rstrip('/')
-                categories_info["main_categories"].append(main_category)
-                categories_info["sub_categories"][main_category] = []
-                categories_info["product_counts"][main_category] = {}
-                
-                # 서브 카테고리 조회
-                sub_response = self.s3_client.list_objects_v2(
-                    Bucket=self.bucket_name,
-                    Prefix=f"{main_category}/",
-                    Delimiter='/'
-                )
-                
-                for sub_prefix in sub_response.get('CommonPrefixes', []):
-                    try:
-                        sub_category = int(sub_prefix['Prefix'].split('/')[-2])
-                        categories_info["sub_categories"][main_category].append(sub_category)
-                        
-                        # 제품 수 조회
-                        product_response = self.s3_client.list_objects_v2(
-                            Bucket=self.bucket_name,
-                            Prefix=f"{main_category}/{sub_category}/",
-                            Delimiter='/'
-                        )
-                        
-                        product_count = len(product_response.get('CommonPrefixes', []))
-                        categories_info["product_counts"][main_category][str(sub_category)] = product_count
-                        categories_info["total_products"] += product_count
-                        
-                    except ValueError:
-                        logger.warning(f"서브 카테고리 ID가 숫자가 아닙니다: {sub_prefix['Prefix']}")
-                        continue
-                
-                # 서브 카테고리 정렬
-                categories_info["sub_categories"][main_category].sort()
-            
-            # 메인 카테고리 정렬
-            categories_info["main_categories"].sort()
-            
-            logger.info(f"S3 카테고리 통계 수집 완료 - 총 제품 수: {categories_info['total_products']}")
-            return categories_info
+            logger.info(f"카테고리 상태 통계 업데이트 성공: {main_category}-{sub_category}, 변화: {status_changes}")
+            return True
             
         except ClientError as e:
-            logger.error(f"S3 카테고리 통계 수집 실패: {e}")
+            logger.error(f"카테고리 상태 통계 업데이트 실패 {main_category}-{sub_category}: {e}")
+            return False
+
+    def get_category_quick_stats(self, main_category: str, sub_category: int) -> dict[str, int]:
+        """
+        특정 카테고리의 빠른 상태 통계를 조회합니다.
+        GUI에서 카테고리 선택 시 즉시 표시할 용도입니다.
+        
+        Args:
+            main_category: 메인 카테고리
+            sub_category: 서브 카테고리
+            
+        Returns:
+            Dict: 상태별 개수 {'pending': 120, 'completed': 25, 'pass': 5, 'total': 150}
+        """
+        stats = self.get_category_status_stats(main_category, sub_category)
+        
+        if not stats:
+            return {'pending': 0, 'completed': 0, 'pass': 0, 'total': 0}
+        
+        return {
+            'pending': stats.get('pending_count', 0),
+            'completed': stats.get('completed_count', 0),
+            'pass': stats.get('pass_count', 0),
+            'total': stats.get('total_products', 0)
+        }
+
+    def get_all_category_status_stats(self) -> dict[str, dict[str, Any]]:
+        """
+        모든 카테고리의 상태별 통계를 조회합니다.
+        
+        Returns:
+            Dict: 카테고리별 상태 통계 
+            example : {
+                'TOP_1005': {
+                    'pending': 120,
+                    'completed': 25,
+                    'pass': 5,
+                    'total': 150
+                },
+                'TOP_1006': {
+                    'pending': 120,
+                    'completed': 25,
+                    'pass': 5,
+                    'total': 150
+                },
+            }
+        """
+        try:
+            response = self.dynamodb_client.query(
+                TableName=self.table_name,
+                KeyConditionExpression='sub_category = :meta_key AND begins_with(product_id, :stats_prefix)',
+                ExpressionAttributeValues={
+                    ':meta_key': {'N': '0'},
+                    ':stats_prefix': {'S': 'STATUS_STATS_'}
+                }
+            )
+            
+            stats_dict = {}
+            for item in response.get('Items', []):
+                converted_item = self._convert_dynamodb_item(item)
+                main_category = converted_item.get('main_category')
+                target_sub_category = converted_item.get('target_sub_category')
+                
+                if main_category and target_sub_category:
+                    key = f"{main_category}_{target_sub_category}"
+                    stats_dict[key] = {
+                        'pending': converted_item.get('pending_count', 0),
+                        'completed': converted_item.get('completed_count', 0),
+                        'pass': converted_item.get('pass_count', 0),
+                        'total': converted_item.get('total_products', 0)
+                    }
+            
+            logger.info(f"전체 카테고리 상태 통계 조회 완료: {len(stats_dict)}개 카테고리")
+            return stats_dict
+            
+        except ClientError as e:
+            logger.error(f"전체 카테고리 상태 통계 조회 실패: {e}")
             return {}
-    
-    def get_main_categories(self) -> list[str]:
-        """
-        사용 가능한 메인 카테고리 목록을 조회합니다.
-        
-        Returns:
-            List[str]: 메인 카테고리 목록
-        """
-        metadata = self.get_category_metadata()
-        if metadata and 'categories_info' in metadata:
-            categories_info = metadata['categories_info']
-            if isinstance(categories_info, str):
-                categories_info = json.loads(categories_info)
-            return categories_info.get('main_categories', [])
-        return []
-    
-    def get_sub_categories(self, main_category: str) -> list[int]:
-        """
-        특정 메인 카테고리의 서브 카테고리 목록을 조회합니다.
-        
-        Args:
-            main_category: 메인 카테고리명
-            
-        Returns:
-            List[int]: 서브 카테고리 목록
-        """
-        metadata = self.get_category_metadata()
-        if metadata and 'categories_info' in metadata:
-            categories_info = metadata['categories_info']
-            if isinstance(categories_info, str):
-                categories_info = json.loads(categories_info)
-            return categories_info.get('sub_categories', {}).get(main_category, [])
-        return []
-    
-    def get_product_counts_by_category(self) -> dict[str, dict[str, int]]:
-        """
-        카테고리별 제품 수를 조회합니다.
-        
-        Returns:
-            Dict[str, Dict[str, int]]: 카테고리별 제품 수
-        """
-        metadata = self.get_category_metadata()
-        if metadata and 'categories_info' in metadata:
-            categories_info = metadata['categories_info']
-            if isinstance(categories_info, str):
-                categories_info = json.loads(categories_info)
-            return categories_info.get('product_counts', {})
-        return {}
-    
-    def increment_product_count(self, main_category: str, sub_category: int) -> bool:
-        """
-        특정 카테고리의 제품 수를 1 증가시킵니다.
-        메타데이터가 미리 초기화되어 있어야 합니다.
-        
-        Args:
-            main_category: 메인 카테고리
-            sub_category: 서브 카테고리
-            
-        Returns:
-            bool: 업데이트 성공 여부
-        """
-        try:
-            # 현재 메타데이터 조회
-            metadata = self.get_category_metadata()
-            
-            if metadata is None:
-                logger.error("카테고리 메타데이터가 없습니다. 먼저 초기화해야 합니다.")
-                return False
-            
-            categories_info = metadata['categories_info']
-            if isinstance(categories_info, str):
-                categories_info = json.loads(categories_info)
-            
-            # 메인 카테고리가 없으면 추가
-            if main_category not in categories_info["main_categories"]:
-                categories_info["main_categories"].append(main_category)
-                categories_info["main_categories"].sort()
-                logger.info(f"새 메인 카테고리 추가: {main_category}")
-            
-            # 서브 카테고리 구조 초기화
-            if main_category not in categories_info["sub_categories"]:
-                categories_info["sub_categories"][main_category] = []
-            if main_category not in categories_info["product_counts"]:
-                categories_info["product_counts"][main_category] = {}
-            
-            # 서브 카테고리가 없으면 추가
-            if sub_category not in categories_info["sub_categories"][main_category]:
-                categories_info["sub_categories"][main_category].append(sub_category)
-                categories_info["sub_categories"][main_category].sort()
-                logger.info(f"새 서브 카테고리 추가: {main_category}-{sub_category}")
-            
-            # 제품 수 증가
-            sub_category_str = str(sub_category)
-            if sub_category_str not in categories_info["product_counts"][main_category]:
-                categories_info["product_counts"][main_category][sub_category_str] = 0
-            
-            categories_info["product_counts"][main_category][sub_category_str] += 1
-            categories_info["total_products"] += 1
-            
-            logger.debug(f"카테고리 제품 수 증가: {main_category}-{sub_category} -> {categories_info['product_counts'][main_category][sub_category_str]}개")
-            
-            # 메타데이터 업데이트
-            return self.update_category_metadata(categories_info)
-            
-        except Exception as e:
-            logger.error(f"제품 수 증가 실패 {main_category}-{sub_category}: {e}")
-            return False
-    
-    def decrement_product_count(self, main_category: str, sub_category: int) -> bool:
-        """
-        특정 카테고리의 제품 수를 1 감소시킵니다.
-        제품 삭제 시 사용됩니다.
-        
-        Args:
-            main_category: 메인 카테고리
-            sub_category: 서브 카테고리
-            
-        Returns:
-            bool: 업데이트 성공 여부
-        """
-        try:
-            # 현재 메타데이터 조회
-            metadata = self.get_category_metadata()
-            
-            if metadata is None:
-                logger.error("카테고리 메타데이터가 없습니다.")
-                return False
-            
-            categories_info = metadata['categories_info']
-            if isinstance(categories_info, str):
-                categories_info = json.loads(categories_info)
-            
-            # 카테고리 존재 확인
-            if main_category not in categories_info.get("main_categories", []):
-                logger.warning(f"존재하지 않는 메인 카테고리: {main_category}")
-                return False
-            
-            if sub_category not in categories_info.get("sub_categories", {}).get(main_category, []):
-                logger.warning(f"존재하지 않는 서브 카테고리: {main_category}-{sub_category}")
-                return False
-            
-            # 제품 수 감소
-            sub_category_str = str(sub_category)
-            current_count = categories_info.get("product_counts", {}).get(main_category, {}).get(sub_category_str, 0)
-            
-            if current_count <= 0:
-                logger.warning(f"이미 제품 수가 0입니다: {main_category}-{sub_category}")
-                return False
-            
-            categories_info["product_counts"][main_category][sub_category_str] -= 1
-            categories_info["total_products"] -= 1
-            
-            logger.info(f"카테고리 제품 수 감소: {main_category}-{sub_category} -> {categories_info['product_counts'][main_category][sub_category_str]}개")
-            
-            # 해당 서브 카테고리에 제품이 없으면 서브 카테고리 제거 (선택사항)
-            if categories_info["product_counts"][main_category][sub_category_str] == 0:
-                logger.info(f"서브 카테고리 {main_category}-{sub_category}에 제품이 없어짐")
-                # 필요하다면 여기서 서브 카테고리를 완전히 제거할 수도 있음
-                # categories_info["sub_categories"][main_category].remove(sub_category)
-                # del categories_info["product_counts"][main_category][sub_category_str]
-            
-            # 메타데이터 업데이트
-            return self.update_category_metadata(categories_info)
-            
-        except Exception as e:
-            logger.error(f"제품 수 감소 실패 {main_category}-{sub_category}: {e}")
-            return False
     
     # =============================================================================
     # 유틸리티 함수들
     # =============================================================================
+    
+    def get_current_aws_user(self) -> str:
+        """
+        현재 AWS 사용자 정보를 조회합니다.
+        
+        Returns:
+            str: 사용자 식별자 (IAM 사용자명 또는 ARN)
+        """
+        try:
+            # 현재 호출자 정보 조회
+            response = self.sts_client.get_caller_identity()
+            
+            # IAM 사용자 ARN에서 사용자명 추출
+            arn = response.get('Arn', '')
+            if 'user/' in arn:
+                # IAM 사용자인 경우: arn:aws:iam::123456789012:user/username
+                user_name = arn.split('user/')[-1]
+                return user_name
+            elif 'assumed-role/' in arn:
+                # 임시 역할인 경우: arn:aws:sts::123456789012:assumed-role/role-name/session-name
+                role_name = arn.split('assumed-role/')[-1].split('/')[0]
+                session_name = arn.split('/')[-1]
+                return f"{role_name}/{session_name}"
+            else:
+                # 기타 경우 ARN 전체 반환
+                return arn
+                
+        except ClientError as e:
+            logger.error(f"AWS 사용자 정보 조회 실패: {e}")
+            return "unknown_user"
+        except Exception as e:
+            logger.error(f"AWS 사용자 정보 조회 중 예상치 못한 오류: {e}")
+            return "unknown_user"
     
     def test_connection(self) -> dict[str, bool]:
         """

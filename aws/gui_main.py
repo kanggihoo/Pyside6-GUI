@@ -13,11 +13,11 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                               QHBoxLayout, QSplitter, QStatusBar, QMenuBar, 
-                               QProgressBar, QLabel, QMessageBox, QDialog,
+                               QHBoxLayout, QSplitter, QStatusBar, 
+                               QProgressBar, QLabel,QMessageBox, QDialog,
                                QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox)
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QAction, QIcon, QKeyEvent
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QAction, QKeyEvent
 
 from aws_manager import AWSManager
 from image_cache import ProductImageCache
@@ -26,20 +26,34 @@ from widgets.representative_panel import RepresentativePanel
 from widgets.product_list_widget import ProductListWidget
 from widgets.category_selection_dialog import CategorySelectionDialog
 
+from typing import Annotated
+
+
 logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
     """메인 윈도우 클래스"""
     
+    
     def __init__(self):
         super().__init__()
-        self.aws_manager = None
+        self.aws_manager:AWSManager |None = None
+        self.representative_panel: RepresentativePanel |None = None
+        self.main_image_viewer: MainImageViewer |None = None
+        self.product_list_widget: ProductListWidget |None = None
+        self.category_selection_dialog: CategorySelectionDialog |None = None
+        
+        
         self.image_cache = ProductImageCache()  # 새로운 ProductImageCache 사용
         self.current_page = 0
         self.last_evaluated_key = None
         self.selected_main_category = None
         self.selected_sub_category = None
+        
+        # 상태 통계 관리 (단순화)
+        self.current_stats = {'pending': 0, 'completed': 0, 'pass': 0, 'total': 0}
+        
         self.setup_ui()
         self.setup_connections()
         self.initialize_aws()
@@ -57,6 +71,7 @@ class MainWindow(QMainWindow):
         """
         self.setWindowTitle("AI 데이터셋 큐레이션 도구")
         self.setGeometry(100, 100, 1600, 900) # (x,y , width, height)
+        self.showMaximized()  # 전체화면으로 시작
         
         # 메뉴바 설정(앱 상단 메뉴바 설정)
         self.setup_menu_bar()
@@ -167,6 +182,11 @@ class MainWindow(QMainWindow):
         self.category_label.setStyleSheet("color: #495057; background-color: transparent; padding-left: 20px;")
         self.status_bar.addWidget(self.category_label)
         
+        # 상태 통계 레이블
+        self.stats_label = QLabel("통계: 대기 중")
+        self.stats_label.setStyleSheet("color: #495057; background-color: transparent; padding-left: 20px;")
+        self.status_bar.addWidget(self.stats_label)
+        
         # 진행률 표시
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -197,6 +217,9 @@ class MainWindow(QMainWindow):
         
         # 큐레이션 완료 시(우측 패널에서의 큐레이션 완료 버튼이 눌리면, 완료된 상품 id 전달)
         self.representative_panel.curation_completed.connect(self.on_curation_completed)
+        
+        # 상품 보류 처리 시
+        self.representative_panel.product_passed.connect(self.on_product_passed)
         
         # 페이지 변경 시
         self.product_list_widget.page_changed.connect(self.load_products_page)
@@ -267,7 +290,7 @@ class MainWindow(QMainWindow):
         """AWS 연결 초기화"""
         try:
             # AWS Manager 초기화
-            self.aws_manager = AWSManager()
+            self.aws_manager:AWSManager = AWSManager()
             
             # 연결 테스트
             connection_result = self.aws_manager.test_connection()
@@ -325,6 +348,9 @@ class MainWindow(QMainWindow):
         self.selected_sub_category = sub_category
         self.update_category_display()
         
+        # 상태 통계 초기화 및 로드
+        self.load_category_stats()
+        
         # ProductListWidget에 카테고리 정보 설정(product_list_widget 인스턴스의 맴버 변수 설정(self.current_main_category, self.current_sub_category))
         self.product_list_widget.set_category_info(main_category, sub_category)
         
@@ -346,6 +372,10 @@ class MainWindow(QMainWindow):
             self.category_label.setText("카테고리: 선택되지 않음")
             self.category_label.setStyleSheet("color: #495057; background-color: transparent; padding-left: 20px;")
             self.setWindowTitle("AI 데이터셋 큐레이션 도구")
+            
+            # 통계 레이블도 초기화
+            self.stats_label.setText("통계: 대기 중")
+            self.stats_label.setStyleSheet("color: #495057; background-color: transparent; padding-left: 20px;")
     
     def load_initial_data(self):
         """초기 데이터 로드"""
@@ -381,13 +411,15 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "카테고리 필요", "먼저 카테고리를 선택해주세요.")
             return
         
+        # 카테고리 통계 다시 로드
+        self.load_category_stats()
+        
         self.current_page = 0
         self.last_evaluated_key = None
         self.load_initial_data()
         self.main_image_viewer.clear()
         self.representative_panel.clear()
     
-    #RECHECK : 큐레이션 완료시 처리 구현 부 
     def on_curation_completed(self, product_id: str):
         """큐레이션 완료 처리
         args:
@@ -395,51 +427,117 @@ class MainWindow(QMainWindow):
         """
         self.work_info_label.setText(f"상품 {product_id} 큐레이션 완료")
         
-        # 상품 목록에서 상태 업데이트
+        # 상품 목록에서 상태 업데이트 (UI 반영만)
         self.product_list_widget.update_product_status(product_id, "COMPLETED")
         
-        # 3초 후 상태 메시지 리셋
-        # QTimer.singleShot(3000, lambda: self.work_info_label.setText("준비 완료"))
+        # 현재 제품 데이터의 상태도 업데이트 (UI 반영만)
+        current_product = self.representative_panel.current_product if hasattr(self.representative_panel, 'current_product') else None
+        if current_product and current_product.get('product_id') == product_id:
+            previous_status = current_product.get('current_status', 'PENDING')
+            current_product['current_status'] = 'COMPLETED'
+            
+            # 로컬 통계 업데이트
+            self.update_local_stats(previous_status, 'COMPLETED')
+        
+        # 2초 후 상태 메시지 리셋
+        QTimer.singleShot(2000, lambda: self.work_info_label.setText("준비 완료"))
+    
+    def on_product_passed(self, product_id: str):
+        """상품 보류 처리 완료
+        args:
+            product_id(str) : 보류 처리된 상품 id 
+        """
+        self.work_info_label.setText(f"상품 {product_id} 보류 처리 완료")
+        
+        # 상품 목록에서 상태 업데이트 (UI 반영만)
+        self.product_list_widget.update_product_status(product_id, "PASS")
+        
+        # 현재 제품 데이터의 상태도 업데이트 (UI 반영만)
+        current_product = self.representative_panel.current_product if hasattr(self.representative_panel, 'current_product') else None
+        if current_product and current_product.get('product_id') == product_id:
+            previous_status = current_product.get('current_status', 'PENDING')
+            current_product['current_status'] = 'PASS'
+            
+            # 로컬 통계 업데이트
+            self.update_local_stats(previous_status, 'PASS')
+        
+        # 2초 후 상태 메시지 리셋
+        QTimer.singleShot(2000, lambda: self.work_info_label.setText("준비 완료"))
+    
+    def update_local_stats(self, previous_status: str, new_status: str):
+        """로컬 통계 업데이트"""
+        if previous_status == new_status:
+            return  # 동일한 상태로 변경하는 경우 무시
+        
+        # 이전 상태 카운트 감소
+        if previous_status.lower() in self.current_stats:
+            self.current_stats[previous_status.lower()] = max(0, self.current_stats[previous_status.lower()] - 1)
+        
+        # 새 상태 카운트 증가
+        if new_status.lower() in self.current_stats:
+            self.current_stats[new_status.lower()] += 1
+        
+        # 상태바 통계 표시 업데이트
+        self.update_stats_display()
+        
+        logger.info(f"로컬 통계 업데이트: {previous_status} -> {new_status}, 현재 통계: {self.current_stats}")
     
     def show_statistics(self):
-        """통계 정보 표시"""
+        """통계 정보 표시 - 새로운 상태 통계 시스템 사용"""
         if not self.aws_manager:
             return
         
         try:
-            # 카테고리 메타데이터 조회
-            metadata = self.aws_manager.get_category_metadata()
+            # 모든 카테고리 상태 통계 조회
+            all_stats = self.aws_manager.get_all_category_status_stats()
             
             stats_text = "작업 통계:\n\n"
             
-            if metadata and 'categories_info' in metadata:
-                import json
-                categories_info = metadata['categories_info']
-                if isinstance(categories_info, str):
-                    categories_info = json.loads(categories_info)
-                
+            if all_stats:
                 # 전체 통계
-                total_products = categories_info.get('total_products', 0)
-                stats_text += f"전체 제품 수: {total_products:,}개\n\n"
+                total_products = sum(stats.get('total', 0) for stats in all_stats.values())
+                total_pending = sum(stats.get('pending', 0) for stats in all_stats.values())
+                total_completed = sum(stats.get('completed', 0) for stats in all_stats.values())
+                total_pass = sum(stats.get('pass', 0) for stats in all_stats.values())
+                
+                stats_text += f"전체 통계:\n"
+                stats_text += f"• 총 제품 수: {total_products:,}개\n"
+                stats_text += f"• 미정: {total_pending:,}개 ({total_pending/total_products*100:.1f}%)\n" if total_products > 0 else "• 미정: 0개\n"
+                stats_text += f"• 완료: {total_completed:,}개 ({total_completed/total_products*100:.1f}%)\n" if total_products > 0 else "• 완료: 0개\n"
+                stats_text += f"• 보류: {total_pass:,}개 ({total_pass/total_products*100:.1f}%)\n\n" if total_products > 0 else "• 보류: 0개\n\n"
                 
                 # 선택된 카테고리 통계
                 if self.selected_main_category and self.selected_sub_category:
-                    category_count = categories_info.get('product_counts', {}).get(
-                        self.selected_main_category, {}
-                    ).get(str(self.selected_sub_category), 0)
-                    
-                    stats_text += f"현재 선택된 카테고리:\n"
-                    stats_text += f"- {self.selected_main_category}-{self.selected_sub_category}: {category_count:,}개\n\n"
+                    category_key = f"{self.selected_main_category}_{self.selected_sub_category}"
+                    if category_key in all_stats:
+                        cat_stats = all_stats[category_key]
+                        stats_text += f"현재 선택된 카테고리 ({self.selected_main_category}-{self.selected_sub_category}):\n"
+                        stats_text += f"• 전체: {cat_stats.get('total', 0):,}개\n"
+                        stats_text += f"• 미정: {cat_stats.get('pending', 0):,}개\n"
+                        stats_text += f"• 완료: {cat_stats.get('completed', 0):,}개\n"
+                        stats_text += f"• 보류: {cat_stats.get('pass', 0):,}개\n\n"
                 
-                # 카테고리별 통계
-                product_counts = categories_info.get('product_counts', {})
-                for main_cat, sub_cats in product_counts.items():
-                    stats_text += f"{main_cat} 카테고리:\n"
-                    for sub_cat, count in sub_cats.items():
-                        stats_text += f"  - {sub_cat}: {count:,}개\n"
-                    stats_text += "\n"
+                # 카테고리별 상세 통계
+                stats_text += "카테고리별 상세 통계:\n"
+                # 메인 카테고리별로 그룹화
+                main_categories = {}
+                for category_key, stats in all_stats.items():
+                    try:
+                        main_cat = category_key.split('_')[0]
+                        if main_cat not in main_categories:
+                            main_categories[main_cat] = []
+                        main_categories[main_cat].append((category_key, stats))
+                    except IndexError:
+                        continue
+                
+                for main_cat, cat_list in sorted(main_categories.items()):
+                    stats_text += f"\n{main_cat} 카테고리:\n"
+                    for category_key, stats in sorted(cat_list):
+                        sub_cat = category_key.split('_')[1] if '_' in category_key else 'Unknown'
+                        stats_text += f"  - {sub_cat}: {stats.get('total', 0):,}개 "
+                        stats_text += f"(미정: {stats.get('pending', 0)}, 완료: {stats.get('completed', 0)}, 보류: {stats.get('pass', 0)})\n"
             else:
-                stats_text += "카테고리 메타데이터를 찾을 수 없습니다.\n"
+                stats_text += "카테고리 상태 통계를 찾을 수 없습니다.\n초기 데이터 업로드를 먼저 실행해주세요.\n"
             
             QMessageBox.information(self, "작업 통계", stats_text)
             
@@ -543,22 +641,102 @@ class MainWindow(QMainWindow):
         # 처리되지 않은 키는 부모 클래스로 전달
         super().keyPressEvent(event)
     
+    def load_category_stats(self):
+        """카테고리 상태 통계를 로드합니다."""
+        if not self.aws_manager or not self.selected_main_category or not self.selected_sub_category:
+            return
+        
+        try:
+            stats = self.aws_manager.get_category_quick_stats(
+                self.selected_main_category, self.selected_sub_category
+            )
+            
+            # 현재 통계 설정 - 키를 소문자로 정규화
+            self.current_stats = {}
+            for key, value in stats.items():
+                self.current_stats[key.lower()] = value
+            
+            # UI 업데이트
+            self.update_stats_display()
+            
+            logger.info(f"카테고리 통계 로드 완료: {self.current_stats}")
+            
+        except Exception as e:
+            logger.error(f"카테고리 통계 로드 실패: {e}")
+            # 기본값으로 설정
+            self.current_stats = {'pending': 0, 'completed': 0, 'pass': 0, 'total': 0}
+            self.update_stats_display()
+    
+    def update_stats_display(self):
+        """통계 정보를 상태바에 표시합니다."""
+        pending = self.current_stats['pending']
+        completed = self.current_stats['completed']
+        pass_count = self.current_stats['pass']
+        total = self.current_stats['total']
+        
+        stats_text = f"통계: 전체 {total} | 미정 {pending} | 완료 {completed} | 보류 {pass_count}"
+        
+        self.stats_label.setText(stats_text)
+        self.stats_label.setStyleSheet("color: #ffffff; background-color: #007bff; padding: 5px 15px; border-radius: 3px; font-weight: bold;")
+    
     def closeEvent(self, event):
         """애플리케이션 종료 시 정리 작업"""
-        # 캐시 정리
-        if hasattr(self, 'image_cache'):
-            self.image_cache.cleanup()
+        logger.info("애플리케이션 종료 시작 - 정리 작업 수행 중...")
         
-        # 스레드 정리
-        if hasattr(self, 'product_list_widget'):
-            self.product_list_widget.cleanup()
-        
-        if hasattr(self, 'main_image_viewer'):
-            # 메인 이미지 뷰어는 cleanup 메서드가 없으므로 제외
-            pass
-        
-        if hasattr(self, 'representative_panel'):
-            self.representative_panel.cleanup()
+        try:
+            # 캐시 정리
+            if hasattr(self, 'image_cache') and self.image_cache:
+                try:
+                    self.image_cache.cleanup()
+                    logger.info("이미지 캐시 정리 완료")
+                except Exception as e:
+                    logger.error(f"이미지 캐시 정리 중 오류: {str(e)}")
+            
+            # 스레드 정리
+            if hasattr(self, 'product_list_widget') and self.product_list_widget:
+                try:
+                    self.product_list_widget.cleanup()
+                    logger.info("상품 목록 위젯 정리 완료")
+                except Exception as e:
+                    logger.error(f"상품 목록 위젯 정리 중 오류: {str(e)}")
+            
+            # 메인 이미지 뷰어 정리
+            if hasattr(self, 'main_image_viewer') and self.main_image_viewer:
+                try:
+                    self.main_image_viewer.clear()
+                    logger.info("메인 이미지 뷰어 정리 완료")
+                except Exception as e:
+                    logger.error(f"메인 이미지 뷰어 정리 중 오류: {str(e)}")
+            
+            # 대표 이미지 패널 정리
+            if hasattr(self, 'representative_panel') and self.representative_panel:
+                try:
+                    self.representative_panel.cleanup()
+                    logger.info("대표 이미지 패널 정리 완료")
+                except Exception as e:
+                    logger.error(f"대표 이미지 패널 정리 중 오류: {str(e)}")
+            
+            # AWS 매니저 정리
+            if hasattr(self, 'aws_manager') and self.aws_manager:
+                try:
+                    # AWS 매니저에 cleanup 메서드가 있다면 호출
+                    if hasattr(self.aws_manager, 'cleanup'):
+                        self.aws_manager.cleanup()
+                    logger.info("AWS 매니저 정리 완료")
+                except Exception as e:
+                    logger.error(f"AWS 매니저 정리 중 오류: {str(e)}")
+            
+            # 위젯 참조 정리
+            self.product_list_widget = None
+            self.main_image_viewer = None
+            self.representative_panel = None
+            self.aws_manager = None
+            self.image_cache = None
+            
+            logger.info("모든 정리 작업 완료 - 애플리케이션을 종료합니다.")
+            
+        except Exception as e:
+            logger.error(f"애플리케이션 종료 중 예상치 못한 오류: {str(e)}")
         
         event.accept()
 

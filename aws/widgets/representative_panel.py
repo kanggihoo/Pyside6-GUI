@@ -7,11 +7,18 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                                QPushButton, QScrollArea, QFrame, QGridLayout,
                                QButtonGroup, QCheckBox, QComboBox, QMessageBox,
-                               QTextEdit, QSpacerItem, QSizePolicy)
+                               QTextEdit, QSpacerItem, QSizePolicy, QDialog,
+                               QRadioButton)
 from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from PySide6.QtGui import QPixmap, QFont, QColor, QPainter, QPen, QKeyEvent
 from typing import Dict, Any, List, Optional
 import logging
+import os
+
+# 분리된 모듈들 import
+from .pass_reason_dialog import PassReasonDialog
+from .curation_confirm_dialog import CurationConfirmDialog
+from .image_widgets import PlaceholderImageWidget, RepresentativeImageWidget
 
 # CurationWorker import 추가
 from .main_image_viewer import CurationWorker
@@ -19,246 +26,23 @@ from .main_image_viewer import CurationWorker
 logger = logging.getLogger(__name__)
 
 
-class PlaceholderImageWidget(QWidget):
-    """선택되지 않은 대표 이미지를 위한 플레이스홀더 위젯"""
-    
-    def __init__(self, image_type: str):
-        super().__init__()
-        self.image_type = image_type
-        self.setup_ui()
-    
-    def setup_ui(self):
-        """UI 설정"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(3)
-        
-        # 타입 레이블
-        type_frame = QFrame()
-        type_frame.setStyleSheet("background-color: #e9ecef; color: #6c757d; border-radius: 3px; border: 2px dashed #ced4da;")
-        type_layout = QHBoxLayout(type_frame)
-        type_layout.setContentsMargins(5, 2, 5, 2)
-        
-        # 타입 표시
-        display_text = self.get_type_display_name()
-        type_label = QLabel(display_text)
-        type_label.setStyleSheet("color: #6c757d; font-weight: bold; font-size: 10px; background-color: transparent;")
-        type_layout.addWidget(type_label)
-        
-        # 선택 필요 표시
-        need_label = QLabel("선택 필요")
-        need_label.setStyleSheet("color: #dc3545; font-size: 9px; background-color: transparent;")
-        type_layout.addWidget(need_label)
-        
-        layout.addWidget(type_frame)
-        
-        # 플레이스홀더 이미지
-        self.image_label = QLabel()
-        self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setFixedSize(120, 120)
-        self.image_label.setStyleSheet("""
-            QLabel {
-                border: 2px dashed #ced4da;
-                border-radius: 5px;
-                background-color: #f8f9fa;
-                color: #6c757d;
-            }
-        """)
-        
-        # 플레이스홀더 이미지 생성
-        self.create_placeholder_image()
-        layout.addWidget(self.image_label)
-        
-        # 안내 텍스트
-        guide_label = QLabel("이미지를 선택해주세요")
-        guide_label.setAlignment(Qt.AlignCenter)
-        guide_label.setWordWrap(True)
-        guide_label.setStyleSheet("font-size: 9px; color: #6c757d; background-color: transparent; padding: 2px;")
-        layout.addWidget(guide_label)
-    
-    def get_type_display_name(self) -> str:
-        """타입 표시명 반환"""
-        type_names = {
-            'model_wearing': '모델 착용',
-            'front_cutout': '정면 누끼',
-            'back_cutout': '후면 누끼'
-        }
-        return type_names.get(self.image_type, self.image_type)
-    
-    def create_placeholder_image(self):
-        """플레이스홀더 이미지 생성"""
-        placeholder = QPixmap(120, 120)
-        placeholder.fill(QColor(248, 249, 250))  # 연한 회색 배경
-        
-        painter = QPainter(placeholder)
-        painter.setPen(QPen(QColor(108, 117, 125), 2, Qt.DashLine))
-        
-        # 테두리 그리기
-        painter.drawRect(10, 10, 100, 100)
-        
-        # + 기호 그리기
-        painter.setPen(QPen(QColor(108, 117, 125), 3))
-        painter.drawLine(60, 40, 60, 80)  # 세로선
-        painter.drawLine(40, 60, 80, 60)  # 가로선
-        
-        painter.end()
-        
-        self.image_label.setPixmap(placeholder)
 
 
-class RepresentativeImageWidget(QWidget):
-    """대표 이미지 위젯 \n
-    - remove_requested : Signal(str) 이미지 제거 요청 시그널 \n
-    - image_data : 이미지 데이터(딕셔너리) \n
-    - image_key : 이미지 키(문자열) \n
-    - image_cache : 이미지 캐시(객체) 
-    - is_main_representative : 대표 이미지 여부(불린)
-    """
-    
-    remove_requested = Signal(str)  # 이미지 키
-    
-    def __init__(self, image_data: Dict[str, Any], image_key: str, is_main_representative: bool = True, image_cache=None):
-        super().__init__()
-        self.image_data = image_data
-        self.image_key = image_key
-        self.is_main_representative = is_main_representative
-        self.image_cache = image_cache
-        
-        self.setup_ui()
-        self.load_image()
-    
-    def setup_ui(self):
-        """UI 설정"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(3)
-        
-        # 타입 레이블
-        type_frame = QFrame()
-        if self.is_main_representative:
-            type_frame.setStyleSheet("background-color: #28a745; color: white; border-radius: 3px;")  # 대표 이미지는 녹색
-        else:
-            type_frame.setStyleSheet("background-color: #007bff; color: white; border-radius: 3px;")  # 색상 변형은 파란색
-        type_layout = QHBoxLayout(type_frame)
-        type_layout.setContentsMargins(5, 2, 5, 2)
-        
-        # 타입 표시
-        if self.is_main_representative:
-            display_text = self.get_type_display_name()
-        else:
-            # 색상 변형 이미지인 경우
-            color_num = self.image_key.replace('color_', '')
-            display_text = f"색상 {color_num}"
-        
-        type_label = QLabel(display_text)
-        type_label.setStyleSheet("color: white; font-weight: bold; font-size: 10px;")
-        type_layout.addWidget(type_label)
-        
-        # 제거 버튼
-        remove_btn = QPushButton("×")
-        remove_btn.setFixedSize(16, 16)
-        remove_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #dc3545;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-weight: bold;
-                font-size: 10px;
-            }
-            QPushButton:hover {
-                background-color: #c82333;
-            }
-        """)
-        remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.image_key))
-        type_layout.addWidget(remove_btn)
-        
-        layout.addWidget(type_frame)
-        
-        # 이미지 표시
-        self.image_label = QLabel()
-        self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setFixedSize(120, 120)
-        self.image_label.setStyleSheet("""
-            QLabel {
-                border: 2px solid #28a745;
-                border-radius: 5px;
-                background-color: white;
-            }
-        """)
-        self.image_label.setScaledContents(True)
-        layout.addWidget(self.image_label)
-        
-        # 이미지 정보
-        filename = self.image_data.get('filename', self.image_data.get('url', '').split('/')[-1])
-        filename_label = QLabel(filename)
-        filename_label.setAlignment(Qt.AlignCenter)
-        filename_label.setWordWrap(True)
-        filename_label.setStyleSheet("font-size: 9px; color: #333; background-color: white; padding: 2px; border-radius: 3px;")
-        layout.addWidget(filename_label)
-    
-    def get_type_display_name(self) -> str:
-        """타입 표시명 반환"""
-        type_names = {
-            'model_wearing': '모델 착용',
-            'front_cutout': '정면 누끼',
-            'back_cutout': '후면 누끼',
-            # 기존 타입도 유지 (호환성)
-            'main': '메인',
-            'color_variant': '색상',
-            'detail': '상세',
-            'other': '기타'
-        }
-        return type_names.get(self.image_key, self.image_key)
-    
-    def load_image(self):
-        """이미지 로드"""
-        if not self.image_cache:
-            self.image_label.setText("캐시 없음")
-            return
-        
-        url = self.image_data.get('url')
-        if not url:
-            self.image_label.setText("URL 없음")
-            return
-        
-        # 캐시에서 이미지 가져오기
-        cached_pixmap = self.image_cache.get_image(url, self.on_image_loaded)
-        
-        if cached_pixmap:
-            self.set_image(cached_pixmap)
-        else:
-            self.image_label.setText("로딩...")
-    
-    def on_image_loaded(self, url: str, pixmap: Optional[QPixmap]):
-        """이미지 로드 완료 콜백"""
-        if pixmap:
-            self.set_image(pixmap)
-        else:
-            self.image_label.setText("로드 실패")
-    
-    def set_image(self, pixmap: QPixmap):
-        """이미지 설정"""
-        if pixmap.isNull():
-            self.image_label.setText("잘못된 이미지")
-            return
-        
-        # 썸네일 크기로 스케일링
-        scaled_pixmap = pixmap.scaled(
-            120, 120,
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation
-        )
-        
-        self.image_label.setPixmap(scaled_pixmap)
+
+
+
+
+
 
 
 class RepresentativePanel(QWidget):
     """대표 이미지 패널 위젯 \n
     - curation_completed : Signal(str) 큐레이션 완료 시 상품 ID 전달
+    - product_passed : Signal(str) 상품 보류 처리 시 상품 ID 전달
     """
     
     curation_completed = Signal(str)  # 완료된 상품 ID
+    product_passed = Signal(str)  # 보류된 상품 ID
     
     def __init__(self):
         super().__init__()
@@ -269,11 +53,24 @@ class RepresentativePanel(QWidget):
         self.representative_images = {}  # 대표 이미지 3개 (model_wearing, front_cutout, back_cutout)
         self.color_variant_images = {}  # 색상별 정면 누끼 이미지들
         self.curation_worker = None  # S3 업데이트 워커
+        self._is_destroyed = False  # 위젯 파괴 상태 추적
         
         # 키보드 포커스 설정
         self.setFocusPolicy(Qt.StrongFocus)
         
         self.setup_ui()
+    
+    def closeEvent(self, event):
+        """위젯 닫힐 때 호출"""
+        self._is_destroyed = True
+        self.cleanup()
+        super().closeEvent(event)
+
+    def deleteLater(self):
+        """위젯 삭제 예정 시 호출"""
+        self._is_destroyed = True
+        self.cleanup()
+        super().deleteLater()
     
     def setup_ui(self):
         """UI 설정"""
@@ -376,6 +173,47 @@ class RepresentativePanel(QWidget):
         scroll_area.setMinimumHeight(150)
         scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
+        # 스크롤바 스타일 설정 - 움직이는 바(thumb)를 더 잘 보이게 하기 위해 색상 반전
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                background-color: transparent;
+            }
+            QScrollBar:horizontal {
+                background-color: #f0f0f0;
+                height: 12px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #007bff;
+                border-radius: 6px;
+                min-width: 20px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: #0056b3;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                background-color: transparent;
+                width: 0px;
+            }
+            QScrollBar:vertical {
+                background-color: #f0f0f0;
+                width: 12px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #007bff;
+                border-radius: 6px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #0056b3;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                background-color: transparent;
+                height: 0px;
+            }
+        """)
+        
         # 색상별 이미지 그리드
         self.color_grid_widget = QWidget()
         self.color_grid_layout = QHBoxLayout(self.color_grid_widget)
@@ -425,6 +263,25 @@ class RepresentativePanel(QWidget):
         """)
         clear_btn.clicked.connect(self.clear_representatives)
         button_layout.addWidget(clear_btn)
+        
+        # Pass 버튼
+        self.pass_btn = QPushButton("Pass (보류)")
+        self.pass_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffc107;
+                color: #212529;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e0a800;
+            }
+        """)
+        self.pass_btn.clicked.connect(self.pass_product)
+        self.pass_btn.setEnabled(False)  # 초기에는 비활성화
+        button_layout.addWidget(self.pass_btn)
         
         button_layout.addStretch()
         
@@ -484,6 +341,9 @@ class RepresentativePanel(QWidget):
         # 이전 선택 초기화
         self.representative_images = {}
         self.color_variant_images = {}
+        
+        # Pass 버튼 활성화 (상품이 로드되면 언제든지 Pass 가능)
+        self.pass_btn.setEnabled(True)
         
         self.update_display()
     
@@ -562,16 +422,12 @@ class RepresentativePanel(QWidget):
             self.color_variant_images[f"color_{i}"] = image_data
     
     def get_type_display_name(self, image_type: str) -> str:
-        """타입 표시명 반환"""
+        """타입별 표시명 반환"""
         type_names = {
             'model_wearing': '모델 착용',
             'front_cutout': '정면 누끼',
             'back_cutout': '후면 누끼',
-            # 기존 타입도 유지 (호환성)
-            'main': '메인',
-            'color_variant': '색상',
-            'detail': '상세',
-            'other': '기타'
+            'color_variant': '제품 색상'
         }
         return type_names.get(image_type, image_type)
     
@@ -611,23 +467,45 @@ class RepresentativePanel(QWidget):
         
         # 색상 변형 영역 업데이트
         self.clear_layout(self.color_grid_layout)
-        for image_key, image_data in self.color_variant_images.items():
+        # 색상 변형 이미지들을 정렬된 순서로 추가
+        sorted_color_keys = sorted(self.color_variant_images.keys(), key=lambda x: int(x.split('_')[1]))
+        for image_key in sorted_color_keys:
+            image_data = self.color_variant_images[image_key]
             variant_widget = RepresentativeImageWidget(image_data, image_key, False, self.image_cache)
             variant_widget.remove_requested.connect(self.remove_representative_image)
-            self.color_grid_layout.insertWidget(self.color_grid_layout.count() - 1, variant_widget)
+            self.color_grid_layout.addWidget(variant_widget)
+        self.color_grid_layout.addStretch()
         
         # 상태 업데이트
         self.update_status()
     
     def clear_layout(self, layout):
         """레이아웃 정리"""
-        while layout.count():
-            child = layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-            elif child.spacerItem() and layout != self.color_grid_layout:
-                # 색상 그리드 레이아웃의 마지막 스트레치는 유지
-                pass
+        try:
+            while layout.count():
+                child = layout.takeAt(0)
+                if child.widget():
+                    widget = child.widget()
+                    try:
+                        # 위젯 정리
+                        if hasattr(widget, 'cleanup'):
+                            widget.cleanup()
+                        elif hasattr(widget, '_is_destroyed'):
+                            widget._is_destroyed = True
+                        
+                        # 위젯 삭제
+                        if widget.parent():
+                            widget.setParent(None)
+                        widget.deleteLater()
+                        
+                    except Exception as e:
+                        logger.warning(f"레이아웃 위젯 정리 중 오류: {str(e)}")
+                        continue
+                elif child.spacerItem():
+                    # 스페이서 아이템 제거
+                    pass
+        except Exception as e:
+            logger.error(f"레이아웃 정리 오류: {str(e)}")
     
     def update_status(self):
         """상태 정보 업데이트"""
@@ -662,42 +540,23 @@ class RepresentativePanel(QWidget):
             self.color_status_label.setText(f"{color_count}개의 색상 변형 이미지가 추가되었습니다 (큐레이션 완료 가능)")
     
     def clear_representatives(self):
-        """대표 이미지 초기화"""
-        reply = QMessageBox.question(
-            self, 
-            "초기화 확인",
-            "선정된 모든 이미지를 초기화하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
+        """대표 이미지들 초기화"""
+        try:
+            # 데이터 초기화
             self.representative_images = {}
             self.color_variant_images = {}
+            
+            # 디스플레이 업데이트 (기존 위젯들이 자동으로 정리됨)
             self.update_display()
-            self.main_status_label.setText("모든 이미지가 초기화되었습니다")
-            self.color_status_label.setText("대표 이미지 3개를 먼저 선정해주세요")
+            
+            # 상태 업데이트
+            self.update_status()
+            
+            logger.info("대표 이미지 초기화 완료")
+            
+        except Exception as e:
+            logger.error(f"대표 이미지 초기화 오류: {str(e)}")
     
-    def auto_clear_representatives(self):
-        """대표 이미지 자동 초기화 (확인 팝업 없음) - 큐레이션 완료 후 사용"""
-        self.representative_images = {}
-        self.color_variant_images = {}
-        self.update_display()
-        
-        # 상태 메시지를 초기화 상태로 복원
-        self.main_status_label.setText("큐레이션이 완료되어 자동으로 초기화되었습니다")
-        self.main_status_label.setStyleSheet("color: #155724; background-color: #d4edda; font-size: 11px; padding: 6px; border-radius: 3px;")
-        
-        self.color_status_label.setText("대표 이미지 3개를 먼저 선정해주세요")
-        self.color_status_label.setStyleSheet("color: #0c4a60; background-color: #d1ecf1; font-size: 11px; padding: 6px; border-radius: 3px;")
-        
-        # 선택 요약 초기화
-        self.selection_summary.setText("선택된 대표 이미지: 0개")
-        self.selection_summary.setStyleSheet("font-weight: bold; color: #212529; background-color: transparent; padding-bottom: 10px;")
-        
-        # 완료 버튼 원래 상태로 복원
-        self.restore_complete_button()
-
     def keyPressEvent(self, event):
         """키보드 이벤트 처리"""
         try:
@@ -719,27 +578,28 @@ class RepresentativePanel(QWidget):
         # 처리되지 않은 키는 부모 클래스로 전달
         super().keyPressEvent(event)
     
-    def show_status_message(self, message: str):
+    def show_status_message(self, message: str, error: bool = False):
         """상태 메시지 표시 - 임시로 selection_summary에 표시"""
         try:
             original_text = self.selection_summary.text()
             self.selection_summary.setText(message)
             self.selection_summary.setStyleSheet("font-weight: bold; color: #dc3545; background-color: transparent; padding-bottom: 10px;")
             
-            # 3초 후 원래 메시지로 복원
+            # 1초 후 원래 메시지로 복원
             def restore_message():
                 self.selection_summary.setText(original_text)
                 self.selection_summary.setStyleSheet("font-weight: bold; color: #212529; background-color: transparent; padding-bottom: 10px;")
             
-            QTimer.singleShot(3000, restore_message)
+            QTimer.singleShot(1000, restore_message)
             
         except Exception as e:
             logger.error(f"상태 메시지 표시 오류: {str(e)}")
     
-    def show_success_status(self):
-        """큐레이션 성공 상태를 패널 내에서 시각적으로 표시"""
+    def show_complete_success_status(self, product_id: str = None):
+        """큐레이션 완료 성공 상태를 패널 내에서 시각적으로 표시"""
         try:
-            product_id = self.current_product.get('product_id', 'Unknown') if self.current_product else 'Unknown'
+            if product_id is None:
+                product_id = self.current_product.get('product_id', 'Unknown') if self.current_product else 'Unknown'
             
             # 메인 선택 요약에 성공 메시지 표시
             self.selection_summary.setText(f"✅ 큐레이션 완료! 상품 ID: {product_id}")
@@ -750,8 +610,7 @@ class RepresentativePanel(QWidget):
             self.main_status_label.setStyleSheet("color: #155724; background-color: #d4edda; font-size: 11px; padding: 6px; border-radius: 3px; font-weight: bold;")
             
             # 색상 변형 영역 상태 업데이트
-            color_count = len(self.color_variant_images)
-            self.color_status_label.setText(f"✅ {color_count}개 색상 변형 이미지 큐레이션 완료!")
+            self.color_status_label.setText("✅ 모든 색상 변형 이미지 큐레이션 완료!")
             self.color_status_label.setStyleSheet("color: #0c4a60; background-color: #d1ecf1; font-size: 11px; padding: 6px; border-radius: 3px; font-weight: bold;")
             
             # 완료 버튼을 성공 상태로 변경
@@ -768,12 +627,20 @@ class RepresentativePanel(QWidget):
             """)
             self.complete_btn.setEnabled(False)
             
-        except Exception as e:
-            logger.error(f"성공 상태 표시 오류: {str(e)}")
+            # 즉시 패널 초기화
+            self._reset_panel_after_completion()
 
-    #RECHECK : 큐레이션 버튼 클릭시 시 처리 구현 부 
-    def complete_curation(self):
-        """큐레이션 완료 처리"""
+            # PASS 처리 후에도 메인 이미지 뷰어의 선택 모드를 강제로 초기화
+            if self.main_image_viewer:
+                self.main_image_viewer.clear_selection_mode()
+                self.main_image_viewer.setFocus()
+                self.main_image_viewer.setFocusPolicy(Qt.StrongFocus)
+            
+        except Exception as e:
+            logger.error(f"큐레이션 완료 성공 상태 표시 오류: {str(e)}")
+    
+    def pass_product(self):
+        """상품을 보류(Pass) 상태로 처리"""
         if not self.current_product:
             QMessageBox.warning(self, "오류", "상품 정보가 없습니다.")
             return
@@ -782,159 +649,143 @@ class RepresentativePanel(QWidget):
             QMessageBox.warning(self, "오류", "AWS 연결이 설정되지 않았습니다.")
             return
         
-        # 확인 팝업 추가 - 실수 방지
-        class SpaceKeyMessageBox(QMessageBox):
-            def __init__(self, parent=None):
-                super().__init__(parent)
-                self.yes_button = None
-                
-            def set_yes_button(self, button):
-                self.yes_button = button
-                
-            def keyPressEvent(self, event):
-                if event.key() == Qt.Key_Space and self.yes_button:
-                    self.yes_button.click()
-                    event.accept()
-                else:
-                    super().keyPressEvent(event)
+        # Pass 이유 입력 다이얼로그 표시
+        dialog = PassReasonDialog(self.current_product.get('product_id', 'Unknown'), self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+            
+        pass_reason = dialog.selected_reason
         
-        msg_box = SpaceKeyMessageBox(self)
-        msg_box.setWindowTitle("큐레이션 완료 확인")
-        msg_box.setText(
-            f"상품 ID: {self.current_product.get('product_id', 'Unknown')}\n\n"
-            f"선택된 이미지:\n"
-            f"• 대표 이미지: {len(self.representative_images)}개\n"
-            f"• 색상 변형: {len(self.color_variant_images)}개\n\n"
-            f"큐레이션을 완료하시겠습니까?\n\n"
-            f"💡 Space: 확인, ESC: 취소"
-        )
-        msg_box.setIcon(QMessageBox.Question)
+        # 초기화되기 전에 필요한 값들을 미리 저장
+        product_id = self.current_product.get('product_id', '')
+        sub_category = self.current_product.get('sub_category')
+        main_category = self.current_product.get('main_category')
+        previous_status = self.current_product.get('current_status', 'PENDING')
         
-        # 버튼 추가
-        yes_btn = msg_box.addButton("확인 (Space)", QMessageBox.YesRole)
-        no_btn = msg_box.addButton("취소 (ESC)", QMessageBox.NoRole)
+        # 버튼 상태 변경
+        original_text = self.pass_btn.text()
+        self.pass_btn.setText("🔄 처리 중...")
+        self.pass_btn.setEnabled(False)
         
-        # Space키 처리를 위해 yes 버튼 참조 설정
-        msg_box.set_yes_button(yes_btn)
-        
-        # 키보드 단축키 설정  
-        msg_box.setDefaultButton(yes_btn)  # 기본 버튼
-        msg_box.setEscapeButton(no_btn)    # ESC 키는 취소 버튼
-        
-        # 팝업 실행
-        reply = msg_box.exec()
-        
-        # 결과 확인 (Yes 버튼을 클릭했는지 확인)
-        if msg_box.clickedButton() != yes_btn:
-            return  # 취소된 경우 아무것도 하지 않음
+        success = False
         
         try:
-            # 버튼 비활성화
-            self.complete_btn.setEnabled(False)
-            self.complete_btn.setText("🔄 처리 중...")
             
-            # MainImageViewer에서 대기 중인 S3 이동 작업 가져오기
-            pending_moves = []
-            if self.main_image_viewer:
-                pending_moves = self.main_image_viewer.get_pending_moves()
-            
-            # S3 업데이트가 필요한 경우 먼저 처리
-            if pending_moves:
-                self.complete_btn.setText("🔄 S3 업데이트 중...")
-                
-                # 워커 쓰레드로 S3 이동 작업 수행
-                self.curation_worker = CurationWorker(self.aws_manager, pending_moves)
-                self.curation_worker.progress_updated.connect(self.on_s3_progress)
-                self.curation_worker.completed.connect(self.on_s3_completed)
-                self.curation_worker.start()
-            else:
-                # S3 업데이트가 없으면 바로 큐레이션 저장
-                self.save_curation_data()
-                
-        except Exception as e:
-            logger.error(f"큐레이션 완료 중 오류: {e}")
-            QMessageBox.critical(self, "오류", f"큐레이션 완료 중 오류가 발생했습니다:\n{str(e)}")
-            self.restore_complete_button()
-    
-    def on_s3_progress(self, message: str, progress: int):
-        """S3 업데이트 진행 상황 업데이트"""
-        try:
-            self.complete_btn.setText(f"🔄 {message}")
-        except Exception as e:
-            logger.error(f"S3 진행 상황 업데이트 오류: {str(e)}")
-    
-    def on_s3_completed(self, success: bool, message: str):
-        """S3 업데이트 완료 처리"""
-        try:
-            if success:
-                # S3 업데이트 성공 시 MainImageViewer의 대기 목록 초기화
-                if self.main_image_viewer:
-                    self.main_image_viewer.clear_pending_moves()
-                
-                # 큐레이션 데이터 저장
-                self.save_curation_data()
-            else:
-                # S3 업데이트 실패
-                QMessageBox.warning(self, "S3 업데이트 실패", f"S3 업데이트에 실패했습니다:\n{message}")
-                self.restore_complete_button()
-                
-        finally:
-            # 워커 정리
-            if self.curation_worker:
-                self.curation_worker.quit()
-                self.curation_worker.wait()
-                self.curation_worker = None
-    
-    #TODO : 큐레이션 데이터 저장 로직 수정 필요
-    def save_curation_data(self):
-        """큐레이션 데이터 저장"""
-        try:
-            self.complete_btn.setText("🔄 큐레이션 저장 중...")
-            
-            # 큐레이션 데이터 구성
-            curation_data = {
-                'representative_images': self.representative_images,
-                'color_variant_images': self.color_variant_images,
-                'curation_status': 'COMPLETED',
-                'timestamp': None  # AWS에서 자동 설정
-            }
-            
-            # 상품 정보에서 필요한 데이터 추출
-            sub_category = self.current_product.get('sub_category')
-            product_id = self.current_product.get('product_id')
-            
-            # DynamoDB에 저장 - 올바른 메서드명과 파라미터 사용
-            success = self.aws_manager.update_curation_result(
+            # DynamoDB에 PASS 상태와 이유 저장 (completed_by는 자동으로 현재 AWS 사용자로 설정됨)
+            success = self.aws_manager.update_product_status_to_pass(
                 sub_category=sub_category,
                 product_id=product_id,
-                curation_data=curation_data,
-                completed_by=None  # 작업자 정보는 현재 없음
+                pass_reason=pass_reason  # Pass 이유 추가
             )
             
             if success:
-                # 성공 메시지를 패널 내에서 표시 (팝업 대신)
-                self.show_success_status()
-                self.curation_completed.emit(self.current_product.get('product_id', ''))  # 완료된 상품 id 전달
+                # 상태 통계 업데이트 (이전 상태에서 PASS로 변경)
+                if previous_status != 'PASS':
+                    status_changes = {previous_status: -1, 'PASS': 1}
+                    stats_success = self.aws_manager.update_category_status_stats_atomic(
+                        main_category, sub_category, status_changes
+                    )
+                    if stats_success:
+                        logger.info(f"상태 통계 업데이트 성공: {main_category}-{sub_category}-{product_id} ({previous_status} -> PASS)")
+                    else:
+                        logger.warning(f"상태 통계 업데이트 실패: {main_category}-{sub_category}-{product_id}")
                 
+                # 성공 메시지를 패널 내에서 표시 및 즉시 초기화
+                self.show_pass_success_status(product_id)
                 
-                self.restore_complete_button()
-                # 3초 후 자동으로 초기화
-                # QTimer.singleShot(3000, self.auto_clear_representatives)
+                # 상품 보류 처리 완료 알림 (저장된 product_id 사용)
+                self.product_passed.emit(product_id)
             else:
-                QMessageBox.warning(self, "오류", "큐레이션 저장에 실패했습니다.")
-                self.restore_complete_button()
+                QMessageBox.warning(self, "오류", "상품 보류 처리에 실패했습니다.")
+                
+        except Exception as e:
+            logger.error(f"상품 보류 처리 중 오류: {e}")
+            QMessageBox.critical(self, "오류", f"상품 보류 처리 중 오류가 발생했습니다:\n{str(e)}")
+        
+        # 성공하지 않은 경우에만 버튼 상태 복원 (성공 시에는 이미 패널이 초기화됨)
+        if not success:
+            self.pass_btn.setText(original_text)
+            self.pass_btn.setEnabled(True)
+    
+    def show_pass_success_status(self, product_id: str = None):
+        """상품 보류 성공 상태를 패널 내에서 시각적으로 표시"""
+        try:
+            if product_id is None:
+                product_id = self.current_product.get('product_id', 'Unknown') if self.current_product else 'Unknown'
+            
+            # 메인 선택 요약에 보류 메시지 표시
+            self.selection_summary.setText(f"⚠️ 상품 보류 완료! 상품 ID: {product_id}")
+            self.selection_summary.setStyleSheet("font-weight: bold; color: #856404; background-color: #fff3cd; padding: 8px; border-radius: 4px; border: 1px solid #ffeaa7;")
+            
+            # 대표 이미지 영역 상태 업데이트
+            self.main_status_label.setText("⚠️ 상품이 보류 상태로 처리되었습니다")
+            self.main_status_label.setStyleSheet("color: #856404; background-color: #fff3cd; font-size: 11px; padding: 6px; border-radius: 3px; font-weight: bold;")
+            
+            # 색상 변형 영역 상태 업데이트
+            self.color_status_label.setText("⚠️ 보류된 상품입니다 (나중에 다시 처리 가능)")
+            self.color_status_label.setStyleSheet("color: #856404; background-color: #fff3cd; font-size: 11px; padding: 6px; border-radius: 3px; font-weight: bold;")
+            
+            # 버튼들 상태 변경
+            self.pass_btn.setText("⚠️ 보류 완료")
+            self.pass_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #ffc107;
+                    color: #212529;
+                    border: 2px solid #ffca2c;
+                    padding: 8px 16px;
+                    border-radius: 4px;
+                    font-weight: bold;
+                }
+            """)
+            self.pass_btn.setEnabled(False)
+            
+            self.complete_btn.setEnabled(False)
+            
+            # 즉시 패널 초기화
+            self._reset_panel_after_completion()
             
         except Exception as e:
-            logger.error(f"큐레이션 데이터 저장 중 오류: {e}")
-            QMessageBox.critical(self, "오류", f"큐레이션 데이터 저장 중 오류가 발생했습니다:\n{str(e)}")
-            self.restore_complete_button()
+            logger.error(f"보류 성공 상태 표시 오류: {str(e)}")
     
-    def restore_complete_button(self):
-        """완료 버튼 원래 상태로 복원"""
+    def _reset_panel_after_completion(self):
+        """작업 완료 후 패널 초기화"""
         try:
-            self.complete_btn.setText("큐레이션 완료 (Space)")
+            # 대표 이미지 선택만 초기화 (current_product는 유지)
+            self.representative_images = {}
+            self.color_variant_images = {}
             
-            # 원래 스타일로 복원
+            # 디스플레이 업데이트
+            self.update_display()
+            
+            # 상태 레이블들 초기화
+            self.main_status_label.setText("대표 이미지 3개를 선정해주세요")
+            self.main_status_label.setStyleSheet("color: #155724; background-color: #d4edda; font-size: 11px; padding: 6px; border-radius: 3px;")
+            
+            self.color_status_label.setText("대표 이미지 3개를 먼저 선정해주세요")
+            self.color_status_label.setStyleSheet("color: #0c4a60; background-color: #d1ecf1; font-size: 11px; padding: 6px; border-radius: 3px;")
+            
+            # 선택 요약 초기화
+            self.selection_summary.setText("선택된 대표 이미지: 0개")
+            self.selection_summary.setStyleSheet("font-weight: bold; color: #212529; background-color: transparent; padding-bottom: 10px;")
+            
+            # 버튼들 초기 상태로 복원
+            self.pass_btn.setText("Pass (보류)")
+            self.pass_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #ffc107;
+                    color: #212529;
+                    border: none;
+                    padding: 8px 16px;
+                    border-radius: 4px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #e0a800;
+                }
+            """)
+            self.pass_btn.setEnabled(True)  # 상품이 로드된 상태이므로 활성화
+            
+            self.complete_btn.setText("큐레이션 완료 (Space)")
             self.complete_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #28a745;
@@ -951,16 +802,295 @@ class RepresentativePanel(QWidget):
                     background-color: #6c757d;
                 }
             """)
+            self.complete_btn.setEnabled(False)  # 대표 이미지가 없으므로 비활성화
             
-            # 완료 버튼 활성화 조건 재확인
-            main_count = len(self.representative_images)
-            color_count = len(self.color_variant_images)
-            is_main_complete = self.is_main_representative_complete()
-            is_complete = is_main_complete and color_count > 0
-            self.complete_btn.setEnabled(is_complete)
+            # 메인 이미지 뷰어의 선택 모드 초기화 (이미지 선택 기능 복원)
+            if self.main_image_viewer:
+                self.main_image_viewer.clear_selection_mode()
+                # 포커스 복원으로 키보드 이벤트 활성화
+                self.main_image_viewer.setFocus()
+                # 강제로 키보드 이벤트 활성화를 위한 추가 설정
+                self.main_image_viewer.setFocusPolicy(Qt.StrongFocus)
+            
+            logger.info("작업 완료 후 대표 이미지 선택 초기화 완료")
             
         except Exception as e:
-            logger.error(f"완료 버튼 복원 오류: {str(e)}")
+            logger.error(f"패널 초기화 오류: {str(e)}")
+    
+    def complete_curation(self):
+        """큐레이션 완료 처리"""
+        if not self.current_product:
+            QMessageBox.warning(self, "오류", "상품 정보가 없습니다.")
+            return
+        
+        if not self.aws_manager:
+            QMessageBox.warning(self, "오류", "AWS 연결이 설정되지 않았습니다.")
+            return
+        
+        # 대표 이미지 수집
+        representative_assets = self.collect_representative_assets()
+        
+        if not representative_assets:
+            QMessageBox.warning(self, "대표 이미지 부족", 
+                              "대표 이미지를 최소 1개 이상 선택해야 합니다.\n\n"
+                              "중앙 이미지 뷰어에서 이미지를 선택하고\n"
+                              "우측 클릭 메뉴로 대표 이미지에 추가해주세요.")
+            return
+        
+        # 확인 팝업
+        model_count = len(representative_assets.get('model', []))
+        product_only_count = len(representative_assets.get('product_only', []))
+        color_variant_count = len(representative_assets.get('color_variant', []))
+        
+        dialog = CurationConfirmDialog(
+            self.current_product.get('product_id', 'Unknown'), 
+            model_count, 
+            product_only_count, 
+            color_variant_count, 
+            model_count + product_only_count, 
+            self
+        )
+        
+        if dialog.exec() == QDialog.Accepted:
+            # 초기화되기 전에 필요한 값들을 미리 저장
+            product_id = self.current_product.get('product_id', '')
+            sub_category = self.current_product.get('sub_category')
+            main_category = self.current_product.get('main_category')
+            previous_status = self.current_product.get('current_status', 'PENDING')
+            
+            # 버튼 상태 변경
+            original_text = self.complete_btn.text()
+            self.complete_btn.setText("🔄 처리 중...")
+            self.complete_btn.setEnabled(False)
+            
+            success = False
+            
+            try:
+                # 1단계: 로컬 segment 이미지들을 S3에 업로드
+                logger.info("로컬 segment 이미지 S3 업로드 시작...")
+                
+                # 업로드할 로컬 이미지 개수 확인
+                local_images_count = 0
+                for image_type, image_data in self.representative_images.items():
+                    if self._is_local_segment_image(image_data):
+                        local_images_count += 1
+                for image_key, image_data in self.color_variant_images.items():
+                    if self._is_local_segment_image(image_data):
+                        local_images_count += 1
+                
+                if local_images_count > 0:
+                    # 진행 상황 메시지 표시
+                    self.selection_summary.setText(f"🔄 로컬 segment 이미지 {local_images_count}개를 S3에 업로드 중...")
+                    self.selection_summary.setStyleSheet("font-weight: bold; color: #007bff; background-color: transparent; padding-bottom: 10px;")
+                    
+                    # UI 업데이트를 위해 이벤트 루프 처리
+                    from PySide6.QtCore import QCoreApplication
+                    QCoreApplication.processEvents()
+                
+                upload_success = self.upload_local_segment_images_to_s3(representative_assets)
+                
+                if not upload_success:
+                    QMessageBox.warning(self, "업로드 실패", "로컬 segment 이미지 S3 업로드에 실패했습니다.")
+                    return
+                
+                logger.info("로컬 segment 이미지 S3 업로드 완료")
+                
+                # 2단계: DynamoDB에 큐레이션 결과 저장 (completed_by는 자동으로 현재 AWS 사용자로 설정됨)
+                
+                success = self.aws_manager.update_curation_result(
+                    sub_category=sub_category,
+                    product_id=product_id,
+                    representative_images=self.representative_images,
+                    color_variant_images=self.color_variant_images
+                )
+                
+                if success:
+                    # 상태 통계 업데이트 (이전 상태에서 COMPLETED로 변경)
+                    if previous_status != 'COMPLETED':
+                        status_changes = {previous_status: -1, 'COMPLETED': 1}
+                        stats_success = self.aws_manager.update_category_status_stats_atomic(
+                            main_category, sub_category, status_changes
+                        )
+                        if stats_success:
+                            logger.info(f"상태 통계 업데이트 성공: {main_category}-{sub_category}-{product_id} ({previous_status} -> COMPLETED)")
+                        else:
+                            logger.warning(f"상태 통계 업데이트 실패: {main_category}-{sub_category}-{product_id}")
+                    
+                    # 성공 메시지를 패널 내에서 표시 및 즉시 초기화
+                    self.show_complete_success_status(product_id)
+                    
+                    # 큐레이션 완료 알림 (저장된 product_id 사용)
+                    self.curation_completed.emit(product_id)
+                else:
+                    QMessageBox.warning(self, "오류", "큐레이션 결과 저장에 실패했습니다.")
+                    
+            except Exception as e:
+                logger.error(f"큐레이션 완료 처리 중 오류: {e}")
+                QMessageBox.critical(self, "오류", f"큐레이션 완료 처리 중 오류가 발생했습니다:\n{str(e)}")
+            
+            # 성공하지 않은 경우에만 버튼 상태 복원 (성공 시에는 이미 패널이 초기화됨)
+            if not success:
+                self.complete_btn.setText(original_text)
+                self.complete_btn.setEnabled(True)
+    
+    def collect_representative_assets(self):
+        """대표 이미지 수집"""
+        # 모델 착용 이미지 수집
+        model_images = []
+        if 'model_wearing' in self.representative_images:
+            model_images.append(self.representative_images['model_wearing'])
+        
+        # 제품 단독 이미지 수집 (정면 누끼, 후면 누끼 + 색상 변형)
+        product_only_images = []
+        if 'front_cutout' in self.representative_images:
+            product_only_images.append(self.representative_images['front_cutout'])
+        if 'back_cutout' in self.representative_images:
+            product_only_images.append(self.representative_images['back_cutout'])
+        
+        # 색상 변형 이미지들도 제품 단독에 포함
+        product_only_images.extend(list(self.color_variant_images.values()))
+        
+        assets = {
+            'model': model_images,
+            'product_only': product_only_images,
+            'color_variant': list(self.color_variant_images.values())  # 호환성을 위해 유지
+        }
+        return assets
+    
+    def upload_local_segment_images_to_s3(self, curation_data: dict) -> bool:
+        """로컬 segment 이미지들을 S3에 업로드"""
+        if not self.current_product or not self.aws_manager:
+            logger.error("상품 정보 또는 AWS 매니저가 없습니다.")
+            return False
+        
+        try:
+            # 상품 정보 추출
+            main_category = self.current_product.get('main_category', '')
+            sub_category = self.current_product.get('sub_category', '')
+            product_id = self.current_product.get('product_id', '')
+            
+            logger.info(f"상품 정보: main_category={main_category}, sub_category={sub_category}, product_id={product_id}")
+            
+            if not all([main_category, sub_category, product_id]):
+                logger.error("상품 정보가 불완전합니다.")
+                return False
+            
+            # 업로드할 로컬 이미지들 수집
+            local_images_to_upload = []
+            
+            # 대표 이미지들에서 로컬 segment 이미지 찾기
+            for image_type, image_data in self.representative_images.items():
+                logger.debug(f"대표 이미지 검사: {image_type} - is_local_segment={image_data.get('is_local_segment', False)}")
+                if self._is_local_segment_image(image_data):
+                    local_images_to_upload.append(image_data)
+                    logger.info(f"로컬 segment 이미지 발견 (대표): {image_data.get('filename', 'unknown')}")
+            
+            # 색상 변형 이미지들에서 로컬 segment 이미지 찾기
+            for image_key, image_data in self.color_variant_images.items():
+                logger.debug(f"색상 변형 이미지 검사: {image_key} - is_local_segment={image_data.get('is_local_segment', False)}")
+                if self._is_local_segment_image(image_data):
+                    local_images_to_upload.append(image_data)
+                    logger.info(f"로컬 segment 이미지 발견 (색상 변형): {image_data.get('filename', 'unknown')}")
+            
+            if not local_images_to_upload:
+                logger.info("업로드할 로컬 segment 이미지가 없습니다.")
+                return True
+            
+            logger.info(f"S3에 업로드할 로컬 segment 이미지 {len(local_images_to_upload)}개 발견")
+            
+            # 각 로컬 이미지를 S3에 업로드
+            upload_success_count = 0
+            for i, image_data in enumerate(local_images_to_upload, 1):
+                logger.info(f"업로드 진행 중 ({i}/{len(local_images_to_upload)}): {image_data.get('filename', 'unknown')}")
+                if self._upload_single_local_image_to_s3(image_data, main_category, sub_category, product_id):
+                    upload_success_count += 1
+                    logger.info(f"로컬 이미지 S3 업로드 성공: {image_data.get('filename', 'unknown')}")
+                else:
+                    logger.error(f"로컬 이미지 S3 업로드 실패: {image_data.get('filename', 'unknown')}")
+            
+            logger.info(f"로컬 segment 이미지 S3 업로드 완료: {upload_success_count}/{len(local_images_to_upload)}")
+            return upload_success_count == len(local_images_to_upload)
+            
+        except Exception as e:
+            logger.error(f"로컬 segment 이미지 S3 업로드 중 오류: {str(e)}")
+            return False
+    
+    def _is_local_segment_image(self, image_data: dict) -> bool:
+        """이미지가 로컬에서 생성된 segment 이미지인지 확인"""
+        return (image_data.get('is_local_segment', False) and 
+                image_data.get('local_path') and 
+                os.path.exists(image_data.get('local_path')))
+    
+    def _upload_single_local_image_to_s3(self, image_data: dict, main_category: str, sub_category: str, product_id: str) -> bool:
+        """단일 로컬 이미지를 S3에 업로드"""
+        try:
+            local_path = image_data.get('local_path')
+            filename = image_data.get('filename', os.path.basename(local_path))
+            
+            logger.info(f"업로드 시작: {filename}")
+            logger.info(f"로컬 경로: {local_path}")
+            
+            if not local_path or not os.path.exists(local_path):
+                logger.error(f"로컬 파일이 존재하지 않습니다: {local_path}")
+                return False
+            
+            # 파일 크기 확인
+            file_size = os.path.getsize(local_path)
+            logger.info(f"파일 크기: {file_size} bytes")
+            
+            # S3 키 생성
+            # sub_category를 int로 변환 (문자열인 경우)
+            try:
+                sub_category_int = int(sub_category) if isinstance(sub_category, str) else sub_category
+                logger.info(f"sub_category 변환: {sub_category} -> {sub_category_int}")
+            except (ValueError, TypeError):
+                logger.error(f"sub_category를 int로 변환할 수 없습니다: {sub_category}")
+                return False
+            
+            s3_key = self.aws_manager._get_s3_object_key(
+                main_category=main_category,
+                sub_category=sub_category_int,
+                product_id=product_id,
+                relative_path=f"segment/{filename}"
+            )
+            
+            logger.info(f"생성된 S3 키: {s3_key}")
+            
+            # 메타데이터 준비
+            metadata = {
+                'created_from': image_data.get('created_from', ''),
+                'original_url': image_data.get('original_url', ''),
+                'segment_info': str(image_data.get('segment_info', {})),
+                'uploaded_by': 'curation_tool',
+                'upload_timestamp': self.aws_manager._get_current_timestamp()
+            }
+            
+            logger.info(f"메타데이터: {metadata}")
+            
+            # S3에 업로드
+            logger.info(f"S3 업로드 시작: {local_path} -> {s3_key}")
+            success = self.aws_manager.upload_file_to_s3(
+                local_file_path=local_path,
+                s3_key=s3_key,
+                metadata=metadata
+            )
+            
+            if success:
+                # 업로드 성공 시 이미지 데이터 업데이트
+                image_data['url'] = f"s3://{self.aws_manager.bucket_name}/{s3_key}"
+                image_data['s3_key'] = s3_key
+                image_data['is_local_segment'] = False  # 이제 S3에 있음
+                image_data['uploaded_to_s3'] = True
+                logger.info(f"이미지 데이터 업데이트 완료: {filename}")
+                logger.info(f"새로운 URL: {image_data['url']}")
+            else:
+                logger.error(f"S3 업로드 실패: {filename}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"단일 로컬 이미지 S3 업로드 중 오류: {str(e)}")
+            return False
     
     def clear(self):
         """패널 초기화"""
@@ -968,14 +1098,91 @@ class RepresentativePanel(QWidget):
         self.representative_images = {}
         self.color_variant_images = {}
         self.product_info_label.setText("상품을 선택해주세요")
+        
+        # 버튼들 초기 상태로 복원
+        # Pass 버튼 초기화
+        self.pass_btn.setText("Pass (보류)")
+        self.pass_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffc107;
+                color: #212529;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e0a800;
+            }
+        """)
+        self.pass_btn.setEnabled(False)  # 상품이 로드되기 전까지는 비활성화
+        
+        # 완료 버튼 초기화
+        self.complete_btn.setText("큐레이션 완료 (Space)")
+        self.complete_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #28a745;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #218838;
+            }
+            QPushButton:disabled {
+                background-color: #6c757d;
+            }
+        """)
+        self.complete_btn.setEnabled(False)
+        
+        # 상태 레이블들 초기화
+        self.main_status_label.setText("대표 이미지 3개를 선정해주세요")
+        self.main_status_label.setStyleSheet("color: #155724; background-color: #d4edda; font-size: 11px; padding: 6px; border-radius: 3px;")
+        
+        self.color_status_label.setText("대표 이미지 3개를 먼저 선정해주세요")
+        self.color_status_label.setStyleSheet("color: #0c4a60; background-color: #d1ecf1; font-size: 11px; padding: 6px; border-radius: 3px;")
+        
+        # 선택 요약 초기화
+        self.selection_summary.setText("선택된 대표 이미지: 0개")
+        self.selection_summary.setStyleSheet("font-weight: bold; color: #212529; background-color: transparent; padding-bottom: 10px;")
+        
+        # 디스플레이 업데이트
         self.update_display()
+        
+        logger.info("대표 이미지 패널 초기화 완료")
     
     def cleanup(self):
-        """정리 작업"""
-        # 워커 쓰레드 정리
-        if self.curation_worker:
-            self.curation_worker.quit()
-            self.curation_worker.wait()
-            self.curation_worker = None
-        # 필요한 경우 정리 작업 수행
-        pass 
+        """위젯 정리 - 메모리 누수 방지"""
+        try:
+            self._is_destroyed = True
+            
+            # 데이터 초기화
+            self.current_product = None
+            self.representative_images = {}
+            self.color_variant_images = {}
+            
+            # 레이아웃 정리
+            self.clear_layout(self.main_rep_grid_layout)
+            self.clear_layout(self.color_grid_layout)
+            
+            # 스레드 정리
+            if hasattr(self, 'curation_worker') and self.curation_worker:
+                if self.curation_worker.isRunning():
+                    self.curation_worker.quit()
+                    if not self.curation_worker.wait(3000):  # 3초 대기
+                        self.curation_worker.terminate()  # 강제 종료
+                        self.curation_worker.wait()
+                self.curation_worker.deleteLater()
+                self.curation_worker = None
+            
+            # 참조 정리
+            self.aws_manager = None
+            self.image_cache = None
+            self.main_image_viewer = None
+            
+            logger.info("RepresentativePanel 정리 완료")
+            
+        except Exception as e:
+            logger.warning(f"RepresentativePanel 정리 중 오류: {str(e)}") 

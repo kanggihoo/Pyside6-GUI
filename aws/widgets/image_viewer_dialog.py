@@ -16,8 +16,6 @@ import logging
 import os
 from pathlib import Path
 from PIL import Image
-import uuid
-import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -373,12 +371,21 @@ class UrlImageViewerDialog(QDialog):
             QTimer.singleShot(500, self.fit_to_window)
 
     def _get_cache_segments_dir(self) -> Path:
-        """Segment 이미지들을 저장할 캐시 디렉토리 경로 반환"""
+        """Segment 이미지들을 저장할 캐시 디렉토리 경로 반환 - 제품별 segment 폴더"""
         if self.image_cache and hasattr(self.image_cache, 'cache_dir'):
             base_dir = Path(self.image_cache.cache_dir)
         else:
-            base_dir = Path.home() / '.cache' / 'ai_dataset_curation' / 'images'
+            base_dir = Path.home() / '.cache' / 'ai_dataset_curation' / 'product_images'
         
+        # 제품별 segment 폴더 구조: {cache_dir}/{product_id}/segment/
+        if self.current_product:
+            product_id = self.current_product.get('product_id')
+            if product_id:
+                segments_dir = base_dir / product_id / 'segment'
+                segments_dir.mkdir(parents=True, exist_ok=True)
+                return segments_dir
+        
+        # 폴백: 제품 정보가 없는 경우 기존 방식
         segments_dir = base_dir / 'segments'
         segments_dir.mkdir(parents=True, exist_ok=True)
         return segments_dir
@@ -503,7 +510,7 @@ class UrlImageViewerDialog(QDialog):
         except Exception:
             width, height = 512, 512  # 기본값
         
-        # 가상의 URL 생성 (로컬 파일이므로 file:// 프로토콜 사용)
+        # 캐시 구조에 맞는 URL 생성 (file:// 프로토콜 사용)
         file_url = f"file://{file_path.absolute()}"
         
         # 생성 시간 정보
@@ -517,8 +524,18 @@ class UrlImageViewerDialog(QDialog):
             'created_time': created_time
         }
         
+        # S3 키 형식: {main_category}/{sub_category}/{product_id}/segment/{filename}
+        # 하지만 로컬 생성 이미지이므로 segments/ 접두사 사용하지 않음
+        s3_key = f"segment/{file_path.name}"
+        if self.current_product:
+            main_category = self.current_product.get('main_category', '')
+            sub_category = self.current_product.get('sub_category', '')
+            product_id = self.current_product.get('product_id', '')
+            if all([main_category, sub_category, product_id]):
+                s3_key = f"{main_category}/{sub_category}/{product_id}/segment/{file_path.name}"
+        
         return {
-            'key': f"segments/{file_path.name}",
+            'key': s3_key,
             'url': file_url,
             'folder': 'segment',
             'filename': file_path.name,
@@ -530,7 +547,10 @@ class UrlImageViewerDialog(QDialog):
             'dimensions': f"{width}x{height}",
             'product_id': self.current_product.get('product_id') if self.current_product else None,
             'segment_info': original_info,  # 추가 메타데이터
-            'display_name': self._generate_display_name(file_path.name)  # 표시용 이름
+            'display_name': self._generate_display_name(file_path.name),  # 표시용 이름
+            # 캐시 구조와 일치하는 추가 정보
+            'cached': True,
+            'cache_path': str(file_path)
         }
 
     def _generate_display_name(self, filename: str) -> str:
@@ -795,7 +815,7 @@ class UrlImageViewerDialog(QDialog):
                     # 메인 뷰어에 새 이미지 추가 시그널 발생
                     self.segment_image_created.emit(new_image_data)
                     
-                    logger.info(f"Segment 이미지 생성 완료: {filename} (display: {display_name})")
+                    logger.debug(f"Segment 이미지 생성 완료: {filename} (display: {display_name})")
                     
                 else:
                     QMessageBox.warning(self, "저장 실패", "Segment 이미지 저장에 실패했습니다.")
