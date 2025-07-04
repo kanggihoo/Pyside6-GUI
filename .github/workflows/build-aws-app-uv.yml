@@ -42,17 +42,13 @@ jobs:
     - name: List files before build
       run: |
         echo "Current directory:"
-        pwd
-        echo "=== Terminal Information ==="
-        echo "OS: ${{ runner.os }}"
-        echo "Files in current directory and hidden files:"
-        Get-ChildItem -Force
-        echo "aws_app.spec exists:"
-        if (Test-Path "aws_app.spec") { echo "YES" } else { echo "NO" }
-        echo "UV cache directory:"
-      # if (Test-Path ".uv") { dir .uv } else { echo "UV cache not found" }
-      # echo "~/.cache directory:"
-      # dir ~/.cache 
+        pwd 
+        echo ${{ github.workspace }}
+    #     pwd
+    #     cd ~
+    #     Get-ChildItem -Force
+    #     cd ${{ github.workspace }}
+    #     Get-ChildItem -Force
 
     - name: Build AWS app
       run: |
@@ -84,27 +80,27 @@ jobs:
         path: AWS_Data_Curator_windows_v*.zip
         retention-days: 30
 
-  # build-macos:
-  #   runs-on: macos-latest
+  build-macos:
+    runs-on: macos-latest
     
-  #   steps:
-  #   - name: Checkout code
-  #     uses: actions/checkout@v4
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-  #   - name: Install UV
-  #     uses: astral-sh/setup-uv@v6
-  #     with:
-  #       version: "latest"
-  #       enanble-cache: true
+    - name: Install UV
+      uses: astral-sh/setup-uv@v6
+      with:
+        version: "latest"
+        enable-cache: true
     
-  #   - name: Set up Python
-  #     uses: actions/setup-python@v5
-  #     with:
-  #       python-version-file: '.python-version'
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version-file: '.python-version'
 
-  #   - name: Install dependencies with UV
-  #     run: |
-  #       uv sync --frozen --dev
+    - name: Install dependencies with UV
+      run: |
+        uv sync --frozen --dev
 
   #   - name: Cache UV dependencies
   #     uses: actions/cache@v4
@@ -116,18 +112,14 @@ jobs:
   #       restore-keys: |
   #         ${{ runner.os }}-uv-
   
-  #   - name: List files before build
-  #     run: |
-  #       echo "Current directory:"
-  #       pwd
-  #       echo "Files in current directory and hidden files:"
-  #       ls -la 
-  #       echo "aws_app.spec exists:"
-  #       if (Test-Path "aws_app.spec") { echo "YES" } else { echo "NO" }
-  #       echo "UV cache directory:"
-  #       if (Test-Path ".uv") { dir .uv } else { echo "UV cache not found" }
-  #       echo "~/.cache directory:"
-  #       ls ~/.cache -la
+    - name: List files before build
+      run: |
+        echo "Current directory:"
+        pwd
+        echo "Files in current directory and hidden files:"
+        cd ~
+        ls -la 
+        
 
 
   
