@@ -42,9 +42,11 @@ jobs:
     - name: List files before build
       run: |
         echo "Current directory:"
+        cd ~
+        pwd  
+        cd ${{ github.workspace }}
         pwd 
-        echo ${{ github.workspace }}
-    #     pwd
+        
     #     cd ~
     #     Get-ChildItem -Force
     #     cd ${{ github.workspace }}
@@ -69,16 +71,16 @@ jobs:
     #       echo "dist directory not found" 
     #     }
     
-    - name: Create ZIP package
-      run: |
-        uv run python package_aws.py
+    # - name: Create ZIP package
+    #   run: |
+    #     uv run python package_aws.py
     
-    - name: Upload Windows artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: aws-app-windows
-        path: AWS_Data_Curator_windows_v*.zip
-        retention-days: 30
+    # - name: Upload Windows artifact
+    #   uses: actions/upload-artifact@v4
+    #   with:
+    #     name: aws-app-windows
+    #     path: AWS_Data_Curator_windows_v*.zip
+    #     retention-days: 30
 
   build-macos:
     runs-on: macos-latest
@@ -117,7 +119,7 @@ jobs:
         echo "Current directory:"
         pwd
         echo "Files in current directory and hidden files:"
-        cd ~
+        cd ~/.cache
         ls -la 
         
 
@@ -138,71 +140,71 @@ jobs:
   #       path: AWS_Data_Curator_macos_v*.zip
   #       retention-days: 30
 
-  # # 릴리즈 배포 작업 (태그가 있을 때만 실행)
-  # release:
-  #   needs: [build-windows, build-macos]
-  #   runs-on: ubuntu-latest
-  #   if: startsWith(github.ref, 'refs/tags/v')
+  # 릴리즈 배포 작업 (태그가 있을 때만 실행)
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    # if: startsWith(github.ref, 'refs/tags/v')
     
-  #   steps:
-  #   - name: Download Windows artifact
-  #     uses: actions/download-artifact@v4
-  #     with:
-  #       name: aws-app-windows
-  #       path: ./windows-artifacts
+    steps:
+    - name: Download Windows artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: aws-app-windows
+        path: ./windows-artifacts
     
-  #   - name: Download macOS artifact
-  #     uses: actions/download-artifact@v4
-  #     with:
-  #       name: aws-app-macos
-  #       path: ./macos-artifacts
+    - name: Download macOS artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: aws-app-macos
+        path: ./macos-artifacts
     
-  #   - name: Create release assets
-  #     run: |
-  #       mkdir -p release-assets
-  #       cp ./windows-artifacts/*.zip ./release-assets/
-  #       cp ./macos-artifacts/*.zip ./release-assets/
-  #       echo "Release assets created:"
-  #       ls -la release-assets/
+    - name: Create release assets
+      run: |
+        mkdir -p release-assets
+        cp ./windows-artifacts/*.zip ./release-assets/
+        cp ./macos-artifacts/*.zip ./release-assets/
+        echo "Release assets created:"
+        ls -la release-assets/
     
-  #   - name: Create Release
-  #     id: create_release
-  #     uses: actions/create-release@v1
-  #     env:
-  #       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #     with:
-  #       tag_name: ${{ github.ref_name }}
-  #       release_name: AWS Data Curator ${{ github.ref_name }}
-  #       body: |
-  #         ## AWS Data Curator ${{ github.ref_name }}
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: AWS Data Curator ${{ github.ref_name }}
+        body: |
+          ## AWS Data Curator ${{ github.ref_name }}
           
-  #         ### Changes
-  #         - Built with UV package manager
-  #         - Improved dependency management
-  #         - Cross-platform support (Windows & macOS)
+          ### Changes
+          - Built with UV package manager
+          - Improved dependency management
+          - Cross-platform support (Windows & macOS)
           
-  #         ### Downloads
-  #         - Windows: AWS_Data_Curator_windows.zip
-  #         - macOS: AWS_Data_Curator_macos.zip
-  #       draft: false
-  #       prerelease: false
+          ### Downloads
+          - Windows: AWS_Data_Curator_windows.zip
+          - macOS: AWS_Data_Curator_macos.zip
+        draft: false
+        prerelease: false
     
-  #   - name: Upload Windows to release
-  #     uses: actions/upload-release-asset@v1
-  #     env:
-  #       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #     with:
-  #       upload_url: ${{ steps.create_release.outputs.upload_url }}
-  #       asset_path: ./release-assets/AWS_Data_Curator_windows_v*.zip
-  #       asset_name: AWS_Data_Curator_windows.zip
-  #       asset_content_type: application/zip
+    - name: Upload Windows to release
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-assets/AWS_Data_Curator_windows_v*.zip
+        asset_name: AWS_Data_Curator_windows.zip
+        asset_content_type: application/zip
     
-  #   - name: Upload macOS to release
-  #     uses: actions/upload-release-asset@v1
-  #     env:
-  #       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #     with:
-  #       upload_url: ${{ steps.create_release.outputs.upload_url }}
-  #       asset_path: ./release-assets/AWS_Data_Curator_macos_v*.zip
-  #       asset_name: AWS_Data_Curator_macos.zip
-  #       asset_content_type: application/zip 
+    - name: Upload macOS to release
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-assets/AWS_Data_Curator_macos_v*.zip
+        asset_name: AWS_Data_Curator_macos.zip
+        asset_content_type: application/zip 
