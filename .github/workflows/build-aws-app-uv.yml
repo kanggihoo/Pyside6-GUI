@@ -167,22 +167,3 @@ jobs:
           ./release-assets/AWS_Data_Curator_windows_v*.zip
           ./release-assets/AWS_Data_Curator_macos_v*.zip
     
-    - name: Upload Windows to release
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./release-assets/AWS_Data_Curator_windows_v*.zip
-        asset_name: AWS_Data_Curator_windows.zip
-        asset_content_type: application/zip
-    
-    - name: Upload macOS to release
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./release-assets/AWS_Data_Curator_macos_v*.zip
-        asset_name: AWS_Data_Curator_macos.zip
-        asset_content_type: application/zip 
