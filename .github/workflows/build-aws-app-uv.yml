@@ -45,15 +45,14 @@ jobs:
         pwd
         echo "=== Terminal Information ==="
         echo "OS: ${{ runner.os }}"
-        echo "Shell: $SHELL"
         echo "Files in current directory and hidden files:"
         Get-ChildItem -Force
         echo "aws_app.spec exists:"
         if (Test-Path "aws_app.spec") { echo "YES" } else { echo "NO" }
         echo "UV cache directory:"
-        if (Test-Path ".uv") { dir .uv } else { echo "UV cache not found" }
-        echo "~/.cache directory:"
-        dir ~/.cache 
+      # if (Test-Path ".uv") { dir .uv } else { echo "UV cache not found" }
+      # echo "~/.cache directory:"
+      # dir ~/.cache 
 
     - name: Build AWS app
       run: |
