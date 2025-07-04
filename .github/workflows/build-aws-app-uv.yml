@@ -16,7 +16,7 @@ jobs:
       uses: astral-sh/setup-uv@v6
       with:
         version: "latest"
-        enanble-cache: true
+        enable-cache: true
     
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -27,15 +27,15 @@ jobs:
       run: |
         uv sync --frozen --dev
 
-    - name: Cache UV dependencies
-      uses: actions/cache@v4
-      with:
-        path: |
-          .uv/cache
-          .uv/venv
-        key: ${{ runner.os }}-uv-${{ hashFiles('aws/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-uv-
+    # - name: Cache UV dependencies
+    #   uses: actions/cache@v4
+    #   with:
+    #     path: |
+    #       .uv/cache
+    #       .uv/venv
+    #     key: ${{ runner.os }}-uv-${{ hashFiles('aws/requirements.txt') }}
+    #     restore-keys: |
+    #       ${{ runner.os }}-uv-
     
 
     
@@ -43,14 +43,17 @@ jobs:
       run: |
         echo "Current directory:"
         pwd
+        echo "=== Terminal Information ==="
+        echo "OS: ${{ runner.os }}"
+        echo "Shell: $SHELL"
         echo "Files in current directory and hidden files:"
-        dir /ah
+        Get-ChildItem -Force
         echo "aws_app.spec exists:"
         if (Test-Path "aws_app.spec") { echo "YES" } else { echo "NO" }
         echo "UV cache directory:"
         if (Test-Path ".uv") { dir .uv } else { echo "UV cache not found" }
         echo "~/.cache directory:"
-        dir ~/.cache /ah
+        dir ~/.cache 
 
     - name: Build AWS app
       run: |
