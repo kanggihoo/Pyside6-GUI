@@ -120,6 +120,8 @@ jobs:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write  # 릴리즈 생성 권한 추가
     
     steps:
     - name: Download Windows artifact
@@ -144,12 +146,10 @@ jobs:
     
     - name: Create Release
       id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      uses: softprops/action-gh-release@v1  # 최신 액션 사용
       with:
         tag_name: ${{ github.ref_name }}
-        release_name: AWS Data Curator ${{ github.ref_name }}
+        name: AWS Data Curator ${{ github.ref_name }}
         body: |
           ## AWS Data Curator ${{ github.ref_name }}
           
@@ -163,6 +163,9 @@ jobs:
           - macOS: AWS_Data_Curator_macos.zip
         draft: false
         prerelease: false
+        files: |
+          ./release-assets/AWS_Data_Curator_windows_v*.zip
+          ./release-assets/AWS_Data_Curator_macos_v*.zip
     
     - name: Upload Windows to release
       uses: actions/upload-release-asset@v1
