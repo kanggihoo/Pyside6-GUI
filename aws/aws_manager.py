@@ -469,7 +469,7 @@ class AWSManager:
         try:
             query_params = {
                 'TableName': self.table_name,
-                'IndexName': 'CurationStatus-LastUpdatedAt-GSI',
+                'IndexName': 'CurationStatus-RecommendationOrder-GSI',
                 'KeyConditionExpression': 'curation_status = :status',
                 'ExpressionAttributeValues': {
                     ':status': {'S': status}

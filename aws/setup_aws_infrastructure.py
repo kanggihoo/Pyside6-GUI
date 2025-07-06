@@ -186,7 +186,7 @@ class AWSInfrastructureSetup:
                 ],
                 'GlobalSecondaryIndexes': [
                     {
-                        'IndexName': 'CurationStatus-LastUpdatedAt-GSI',
+                        'IndexName': 'CurationStatus-RecommendationOrder-GSI',
                         'KeySchema': [
                             {
                                 'AttributeName': 'curation_status',
