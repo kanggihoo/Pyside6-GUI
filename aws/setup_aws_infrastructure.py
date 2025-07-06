@@ -9,6 +9,7 @@ import json
 from botocore.exceptions import ClientError
 from typing import Dict, Any, Optional
 import time
+from pathlib import Path
 
 class AWSInfrastructureSetup:
     def __init__(self, region_name: str = 'ap-northeast-2'):
@@ -320,22 +321,28 @@ class AWSInfrastructureSetup:
         
         return results
 
+def _load_config() -> dict:
+    config_path = Path(__file__).parent / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(f"설정 파일을 찾을 수 없습니다: {config_path}")
+    
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    return config
+
 def main():
     """메인 함수"""
-    import argparse
+    config = _load_config()
+    region_name = config.get('aws', {}).get('region_name', 'ap-northeast-2')
+    bucket_name = config.get('s3' , {}).get('bucket_name', 'sw-fashion-image-data')
+    table_name = config.get('dynamodb' , {}).get('table_name', 'ProductAssets')
     
-    parser = argparse.ArgumentParser(description='AWS 인프라 구축 스크립트')
-    parser.add_argument('--bucket-name', required=True, help='S3 버킷 이름')
-    parser.add_argument('--table-name', default='ProductAssets', help='DynamoDB 테이블 이름 (기본값: ProductAssets)')
-    parser.add_argument('--region', default='ap-northeast-2', help='AWS 리전 (기본값: ap-northeast-2)')
-    
-    args = parser.parse_args()
     
     # 인프라 구축 실행
-    setup = AWSInfrastructureSetup(region_name=args.region)
+    setup = AWSInfrastructureSetup(region_name=region_name)
     results = setup.setup_infrastructure(
-        bucket_name=args.bucket_name,
-        table_name=args.table_name
+        bucket_name=bucket_name,
+        table_name=table_name
     )
     
     # 종료 코드 설정

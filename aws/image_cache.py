@@ -220,13 +220,20 @@ class ProductImageCache:
     
     def get_product_images(self, product_id: str) -> Dict[str, List[Dict[str, str]]]:
         """
-        제품의 모든 폴더 이미지 정보 반환
+        현재 product_id의 모든 폴더(detail , segment , summary , text) 내의 이미지 정보 반환
         
         Args:
             product_id: 제품 ID
             
         Returns:
             Dict: 폴더별 이미지 정보 {folder: [{'filename': str, 'path': str}]}
+            example : 
+            {
+                'detail': [{'filename': '0.jpg', 'path': 'detail/0.jpg'}],
+                'segment': [{'filename': '0.jpg', 'path': 'segment/0.jpg'}],
+                'summary': [{'filename': '0.jpg', 'path': 'summary/0.jpg'}],
+                'text': [{'filename': '0.jpg', 'path': 'text/0.jpg'}]
+            }
         """
         result = {}
         product_cache_dir = self.cache_dir / product_id
@@ -240,7 +247,7 @@ class ProductImageCache:
                 result[folder_name] = []
                 
                 for image_file in folder_path.iterdir():
-                    if image_file.is_file() and image_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                    if image_file.is_file() and image_file.suffix.lower() in ['.jpg', '.jpeg', '.png']:
                         result[folder_name].append({
                             'filename': image_file.name,
                             'path': str(image_file)
