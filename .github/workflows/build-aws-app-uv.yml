@@ -2,7 +2,7 @@ name: Build AWS Data Curator with UV
 
 on:
   push:
-    branches: [ main, dev/boto3 ]
+    branches: [ main ]
     tags: [ 'v*' ]
 jobs:
   build-windows:

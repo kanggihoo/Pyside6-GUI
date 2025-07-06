@@ -371,8 +371,10 @@ class AWSManager:
                 'main_category': {'S': main_category},
                 'sub_category': {'N': str(sub_category)}, # 파티션 키 
                 'product_id': {'S': product_id}, # 정렬 키 
-                'current_status': {'S': 'PENDING'}, # GSI 인덱스의 파티션 키 
-                'last_updated_at': {'S': current_time}, # GSI 인덱스의 정렬 키 
+                'curation_status': {'S': 'PENDING'}, # GSI 인덱스의 파티션 키 
+                'curation_updated_at': {'S': current_time}, # GSI 인덱스의 정렬 키 
+                'caption_status': {'S': 'PENDING'}, # GSI 인덱스의 파티션 키 
+                'caption_updated_at': {'S': current_time}, # GSI 인덱스의 정렬 키 
                 'created_at': {'S': current_time}
             }
             
@@ -457,8 +459,8 @@ class AWSManager:
         try:
             query_params = {
                 'TableName': self.table_name,
-                'IndexName': 'CurrentStatus-LastUpdatedAt-GSI',
-                'KeyConditionExpression': 'current_status = :status',
+                'IndexName': 'CurationStatus-LastUpdatedAt-GSI',
+                'KeyConditionExpression': 'curation_status = :status',
                 'ExpressionAttributeValues': {
                     ':status': {'S': status}
                 },
@@ -514,7 +516,7 @@ class AWSManager:
             current_time = self._get_current_timestamp()
             
             # SET 표현식 (새로운 값 설정)
-            set_expression_parts = ["current_status = :status", "last_updated_at = :timestamp"]
+            set_expression_parts = ["curation_status = :status", "curation_updated_at = :timestamp"]
             expression_values = {
                 ':status': {'S': 'COMPLETED'},
                 ':timestamp': {'S': current_time}
@@ -574,12 +576,12 @@ class AWSManager:
             remove_expression_parts = []
             
             # PASS 상태에서 COMPLETED로 변경하는 경우 pass_reason 필드 제거
-            if existing_product.get('current_status') == 'PASS':
+            if existing_product.get('curation_status') == 'PASS':
                 if 'pass_reason' in existing_product:
                     remove_expression_parts.append("pass_reason")
             
             # COMPLETED 상태에서 COMPLETED로 변경하는 경우 큐레이션 관련 필드들 제거
-            elif existing_product.get('current_status') == 'COMPLETED':
+            elif existing_product.get('curation_status') == 'COMPLETED':
                 # representative_assets와 completed_by는 새로 설정하므로 제거하지 않음
                 pass
             
@@ -633,7 +635,7 @@ class AWSManager:
             current_time = self._get_current_timestamp()
             
             # SET 표현식 (새로운 값 설정)
-            set_expression_parts = ["current_status = :status", "last_updated_at = :timestamp"]
+            set_expression_parts = ["curation_status = :status", "curation_updated_at = :timestamp"]
             expression_values = {
                 ':status': {'S': 'PASS'},
                 ':timestamp': {'S': current_time}
@@ -653,7 +655,7 @@ class AWSManager:
             remove_expression_parts = []
             
             # COMPLETED 상태에서 COMPLETED로 변경하는 경우 큐레이션 관련 필드들 제거
-            if existing_product.get('current_status') == 'COMPLETED':
+            if existing_product.get('curation_status') == 'COMPLETED':
                 if 'representative_assets' in existing_product:
                     remove_expression_parts.append("representative_assets")
                 # completed_by는 PASS 처리에서도 사용하므로 제거하지 않음
@@ -704,7 +706,7 @@ class AWSManager:
             # 업데이트할 필드들 정의
             supported_folders = ['detail', 'summary', 'segment', 'text']
             
-            update_expression_parts = ["last_updated_at = :timestamp"]
+            update_expression_parts = ["curation_updated_at = :timestamp"]
             expression_values = {':timestamp': {'S': current_time}}
             
             # 각 폴더별 파일 리스트 추가
@@ -859,7 +861,7 @@ class AWSManager:
                 'completed_count': {'N': '0'},
                 'pass_count': {'N': '0'},
                 'total_products': {'N': '0'},
-                'last_updated_at': {'S': current_time}
+                'curation_updated_at': {'S': current_time}
             }
         Args:
             main_category: 메인 카테고리
@@ -888,7 +890,7 @@ class AWSManager:
                 'completed_count': {'N': '0'},
                 'pass_count': {'N': '0'},
                 'total_products': {'N': '0'},
-                'last_updated_at': {'S': current_time}
+                'curation_updated_at': {'S': current_time}
             }
             
             self.dynamodb_client.put_item(
@@ -927,7 +929,7 @@ class AWSManager:
             #         return False
             
             # 업데이트 표현식 구성
-            update_expression_parts = ["last_updated_at = :timestamp"]
+            update_expression_parts = ["curation_updated_at = :timestamp"]
             expression_values = {':timestamp': {'S': current_time}}
             
             total_change = 0
@@ -1139,7 +1141,7 @@ class AWSManager:
             stats = {
                 'total_products': item_count,
                 'status_breakdown': status_counts,
-                'last_updated': self._get_current_timestamp()
+                'curation_updated_at': self._get_current_timestamp()
             }
             
             logger.info(f"통계 정보 조회 완료: {stats}")

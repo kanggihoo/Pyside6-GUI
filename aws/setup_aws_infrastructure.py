@@ -167,24 +167,32 @@ class AWSInfrastructureSetup:
                         'AttributeType': 'S'  # 문자열 타입
                     },
                     {
-                        'AttributeName': 'current_status',
+                        'AttributeName': 'curation_status',
                         'AttributeType': 'S'  # GSI 파티션 키
                     },
                     {
-                        'AttributeName': 'last_updated_at',
+                        'AttributeName': 'curation_updated_at',
+                        'AttributeType': 'S'  # GSI 정렬 키
+                    },
+                    {
+                        'AttributeName': 'caption_status',
+                        'AttributeType': 'S'  # GSI 파티션 키
+                    },
+                    {
+                        'AttributeName': 'caption_updated_at',
                         'AttributeType': 'S'  # GSI 정렬 키
                     },
                 ],
                 'GlobalSecondaryIndexes': [
                     {
-                        'IndexName': 'CurrentStatus-LastUpdatedAt-GSI',
+                        'IndexName': 'CurationStatus-LastUpdatedAt-GSI',
                         'KeySchema': [
                             {
-                                'AttributeName': 'current_status',
+                                'AttributeName': 'curation_status',
                                 'KeyType': 'HASH'  # 큐레이션 상태별 조회
                             },
                             {
-                                'AttributeName': 'last_updated_at',
+                                'AttributeName': 'curation_updated_at',
                                 'KeyType': 'RANGE'  # 최신순 정렬
                             }
                         ],
@@ -192,6 +200,22 @@ class AWSInfrastructureSetup:
                             'ProjectionType': 'ALL'  # 모든 속성 프로젝션
                         },
                     },
+                    {
+                        'IndexName': 'CaptionStatus-LastUpdatedAt-GSI',
+                        'KeySchema': [
+                            {
+                                'AttributeName': 'caption_status',
+                                'KeyType': 'HASH'
+                            },
+                            {
+                                'AttributeName': 'caption_updated_at',
+                                'KeyType': 'RANGE'
+                            }
+                        ],
+                        'Projection': {
+                            'ProjectionType': 'ALL'  # 모든 속성 프로젝션
+                        },
+                    }
                 ],
                 'BillingMode': 'PAY_PER_REQUEST'  # 온디맨드 요금제 (사용량 기반)
             }
