@@ -173,7 +173,7 @@ class AWSInfrastructureSetup:
                     },
                     {
                         'AttributeName': 'recommendation_order',
-                        'AttributeType': 'N'  # GSI 정렬 키
+                        'AttributeType': 'S'  # GSI 정렬 키 (문자열로 변경)
                     },
                     {
                         'AttributeName': 'caption_status',

@@ -376,13 +376,16 @@ class AWSManager:
 
             current_time = self._get_current_timestamp()
             
+            # Format recommendation_order as 7-digit string and combine with product_id
+            formatted_order = f"{recommendation_order:07d}#{product_id}"
+            
             # DynamoDB client용 아이템 구성 (타입 명시 필요)
             item = {
                 'main_category': {'S': main_category},
                 'sub_category': {'N': str(sub_category)}, # 파티션 키 
                 'product_id': {'S': product_id}, # 정렬 키 
                 'curation_status': {'S': 'PENDING'}, # GSI 인덱스의 파티션 키 
-                'recommendation_order': {'N': str(recommendation_order)}, # GSI 인덱스의 정렬 키 
+                'recommendation_order': {'S': formatted_order}, # GSI 인덱스의 정렬 키 (문자열로 변경)
                 'caption_status': {'S': 'PENDING'}, # GSI 인덱스의 파티션 키 
                 'caption_updated_at': {'S': current_time}, # GSI 인덱스의 정렬 키 
                 'created_at': {'S': current_time}
