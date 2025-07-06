@@ -32,6 +32,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def _load_json_file(file_path: Path) -> Dict[str, Any]:
+    """
+    JSON 파일을 로드합니다.
+    """
+    with open(file_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
 
 class InitialUploader:
     """초기 데이터 업로드 담당 클래스"""
@@ -112,7 +118,8 @@ class InitialUploader:
                     "sub_category": 1005,
                     "product_id": "674732",
                     "local_path": "TOP/1005/674732",
-                    "meta_file": "TOP/1005/674732/meta.json"
+                    "meta_file": "TOP/1005/674732/meta.json",
+                    "recommendation_order": 0
                 }
             ]
         
@@ -159,12 +166,14 @@ class InitialUploader:
                 meta_file = product_dir / 'meta.json'
                 
                 if meta_file.exists():
+                    json_data = _load_json_file(self.data_root_path / str(sub_category_id) / meta_file)
                     products.append({
                         'main_category': main_category,
                         'sub_category': sub_category_id,
                         'product_id': product_id,
                         'local_path': product_dir,
-                        'meta_file': meta_file
+                        'meta_file': meta_file,
+                        "recommendation_order": json_data["recommendation_order"]
                     })
                     product_count += 1
                 else:
@@ -406,6 +415,7 @@ class InitialUploader:
         product_id = product_info['product_id']
         product_dir = product_info['local_path']
         meta_file = product_info['meta_file']
+        recommendation_order = product_info["recommendation_order"]
         
         logger.info(f"제품 업로드 시작: {main_category}-{sub_category}-{product_id}")
         
@@ -419,7 +429,7 @@ class InitialUploader:
             
             # 3. DynamoDB에 아이템 생성 (파일 리스트 포함)
             db_success, is_new_product = self.aws_manager.create_product_item(
-                main_category, sub_category, product_id, image_file_lists
+                main_category, sub_category, product_id, image_file_lists, recommendation_order
             )
 
             if not is_new_product:
@@ -606,7 +616,7 @@ def main():
         data_path: str = 'TOP'
         region: str = 'ap-northeast-2'
         profile: str = None
-        max_products: int|None = None
+        max_products: int|None = 2
         dry_run: bool = False
     
     try:

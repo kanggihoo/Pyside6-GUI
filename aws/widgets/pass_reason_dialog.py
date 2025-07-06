@@ -39,11 +39,13 @@ class PassReasonDialog(QDialog):
         self.button_group = QButtonGroup(self)
         
         # 미리 정의된 이유들
+        #TODO : 여기도 인덱스 걸어야 하나?? 
         predefined_reasons = [
             "이미지 분활 안됨",
             "모델 정면 이미지 없음",
             "정면 누끼 이미지 없음",
             "후면 누끼 이미지 없음",
+            "정면, 후면 누끼 이미지 없음"
             "기타 (직접 입력)"
         ]
         

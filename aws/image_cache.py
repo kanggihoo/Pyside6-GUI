@@ -266,33 +266,41 @@ class ProductImageCache:
         
         return result
     
-    def clear_non_current_page_cache(self):
-        """현재 페이지가 아닌 제품들의 캐시 정리"""
+    def clear_non_current_page_cache(self, completed_product_ids: List[str] = None):
+        """현재 페이지가 아닌 제품들 중 큐레이션이 완료된 제품들의 캐시만 정리"""
         try:
-            # 메모리 캐시에서 현재 페이지가 아닌 항목 제거
+            if completed_product_ids is None:
+                completed_product_ids = []
+            
+            # 메모리 캐시에서 완료된 제품들의 항목 제거
             with QMutexLocker(self.mutex):
                 keys_to_remove = []
                 for cache_key in self.memory_cache.keys():
                     product_id = cache_key[0]
-                    if product_id not in self.current_page_products:
+                    # 현재 페이지가 아니면서 완료된 제품인 경우만 삭제
+                    if (product_id not in self.current_page_products and 
+                        product_id in completed_product_ids):
                         keys_to_remove.append(cache_key)
                 
                 for key in keys_to_remove:
                     del self.memory_cache[key]
+                    logger.debug(f"메모리 캐시에서 완료된 제품 삭제: {key[0]}")
             
-            # 파일 캐시에서 현재 페이지가 아닌 제품 폴더 삭제
+            # 파일 캐시에서 완료된 제품 폴더만 삭제
             for product_dir in self.cache_dir.iterdir():
-                if product_dir.is_dir() and product_dir.name not in self.current_page_products:
+                if (product_dir.is_dir() and 
+                    product_dir.name not in self.current_page_products and
+                    product_dir.name in completed_product_ids):
                     try:
                         shutil.rmtree(product_dir)
-                        logger.debug(f"제품 캐시 삭제: {product_dir.name}")
+                        logger.debug(f"완료된 제품 캐시 삭제: {product_dir.name}")
                     except Exception as e:
-                        logger.warning(f"제품 캐시 삭제 실패 {product_dir.name}: {e}")
+                        logger.warning(f"완료된 제품 캐시 삭제 실패 {product_dir.name}: {e}")
             
-            logger.info(f"페이지 캐시 정리 완료. 현재 페이지 제품 수: {len(self.current_page_products)}")
+            logger.info(f"완료된 제품 캐시 정리 완료. 현재 페이지 제품 수: {len(self.current_page_products)}, 삭제된 완료 제품 수: {len(completed_product_ids)}")
             
         except Exception as e:
-            logger.error(f"페이지 캐시 정리 중 오류: {e}")
+            logger.error(f"완료된 제품 캐시 정리 중 오류: {e}")
     
     def clear_all_cache(self):
         """모든 캐시 정리"""

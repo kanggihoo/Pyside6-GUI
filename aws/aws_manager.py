@@ -123,13 +123,22 @@ class AWSManager:
                 converted[key] = value
         
         # JSON 문자열 필드들 파싱
-        json_fields = ['product_info', 'representative_assets']
-        for field in json_fields:
-            if field in converted and isinstance(converted[field], str):
-                try:
-                    converted[field] = json.loads(converted[field])
-                except json.JSONDecodeError:
-                    pass
+        # json_fields = ['product_info', 'representative_assets']
+        # for field in json_fields:
+        #     if field in converted and isinstance(converted[field], str):
+        #         try:
+        #             converted[field] = json.loads(converted[field])
+        #         except json.JSONDecodeError:
+        #             pass
+        
+        # UI 호환성을 위한 필드 매핑
+        # DynamoDB의 curation_status를 UI에서 사용하는 current_status로 매핑
+        if 'curation_status' in converted:
+            converted['current_status'] = converted['curation_status']
+        
+        # # 업데이트 시간 필드 매핑
+        # if 'curation_updated_at' in converted:
+        #     converted['last_updated_at'] = converted['curation_updated_at']
                 
         return converted
     
@@ -335,7 +344,7 @@ class AWSManager:
     # =============================================================================
     
     def create_product_item(self, main_category: str, sub_category: int, product_id: str, 
-                           file_lists: dict[str, list[str]] = None) -> tuple[bool, bool]:
+                           file_lists: dict[str, list[str]] = None, recommendation_order: int = 0) -> tuple[bool, bool]:
         """
         DynamoDB에 제품 아이템을 생성하거나 업데이트합니다.
         기존 아이템이 있으면 덮어쓰지 않고 False를 반환하고, 없으면 새로 생성합니다.
@@ -345,6 +354,7 @@ class AWSManager:
             sub_category: 서브 카테고리 ID
             product_id: 제품 ID
             file_lists: 폴더별 파일 리스트 
+            recommendation_order: 추천 순서(작을수록 높음)
                 example : 
                     {
                         "text" : ["1.jpg", "2.jpg"],
@@ -372,7 +382,7 @@ class AWSManager:
                 'sub_category': {'N': str(sub_category)}, # 파티션 키 
                 'product_id': {'S': product_id}, # 정렬 키 
                 'curation_status': {'S': 'PENDING'}, # GSI 인덱스의 파티션 키 
-                'curation_updated_at': {'S': current_time}, # GSI 인덱스의 정렬 키 
+                'recommendation_order': {'N': str(recommendation_order)}, # GSI 인덱스의 정렬 키 
                 'caption_status': {'S': 'PENDING'}, # GSI 인덱스의 파티션 키 
                 'caption_updated_at': {'S': current_time}, # GSI 인덱스의 정렬 키 
                 'created_at': {'S': current_time}
@@ -516,10 +526,9 @@ class AWSManager:
             current_time = self._get_current_timestamp()
             
             # SET 표현식 (새로운 값 설정)
-            set_expression_parts = ["curation_status = :status", "curation_updated_at = :timestamp"]
+            set_expression_parts = ["curation_status = :status"]
             expression_values = {
-                ':status': {'S': 'COMPLETED'},
-                ':timestamp': {'S': current_time}
+                ':status': {'S': 'COMPLETED'}
             }
             
             # 큐레이션 결과 추가 - DynamoDB Map 타입으로 저장
@@ -632,13 +641,11 @@ class AWSManager:
                 logger.error(f"제품을 찾을 수 없습니다: {sub_category}-{product_id}")
                 return False
             
-            current_time = self._get_current_timestamp()
             
             # SET 표현식 (새로운 값 설정)
-            set_expression_parts = ["curation_status = :status", "curation_updated_at = :timestamp"]
+            set_expression_parts = ["curation_status = :status"]
             expression_values = {
                 ':status': {'S': 'PASS'},
-                ':timestamp': {'S': current_time}
             }
             
             # pass_reason이 제공된 경우 추가
@@ -701,13 +708,13 @@ class AWSManager:
             bool: 업데이트 성공 여부
         """
         try:
-            current_time = self._get_current_timestamp()
+    
             
             # 업데이트할 필드들 정의
             supported_folders = ['detail', 'summary', 'segment', 'text']
             
-            update_expression_parts = ["curation_updated_at = :timestamp"]
-            expression_values = {':timestamp': {'S': current_time}}
+            update_expression_parts = []
+            expression_values = {}
             
             # 각 폴더별 파일 리스트 추가
             for folder in supported_folders:
@@ -861,7 +868,6 @@ class AWSManager:
                 'completed_count': {'N': '0'},
                 'pass_count': {'N': '0'},
                 'total_products': {'N': '0'},
-                'curation_updated_at': {'S': current_time}
             }
         Args:
             main_category: 메인 카테고리
@@ -872,7 +878,6 @@ class AWSManager:
         """
         try:
             stats_id = f"STATUS_STATS_{main_category}_{sub_category}"
-            current_time = self._get_current_timestamp()
             
             # # 기존 통계가 있는지 확인
             # existing_stats = self.get_category_status_stats(main_category, sub_category)
@@ -890,7 +895,6 @@ class AWSManager:
                 'completed_count': {'N': '0'},
                 'pass_count': {'N': '0'},
                 'total_products': {'N': '0'},
-                'curation_updated_at': {'S': current_time}
             }
             
             self.dynamodb_client.put_item(
@@ -929,8 +933,8 @@ class AWSManager:
             #         return False
             
             # 업데이트 표현식 구성
-            update_expression_parts = ["curation_updated_at = :timestamp"]
-            expression_values = {':timestamp': {'S': current_time}}
+            update_expression_parts = []
+            expression_values = {}
             
             total_change = 0
             
@@ -1141,7 +1145,6 @@ class AWSManager:
             stats = {
                 'total_products': item_count,
                 'status_breakdown': status_counts,
-                'curation_updated_at': self._get_current_timestamp()
             }
             
             logger.info(f"통계 정보 조회 완료: {stats}")

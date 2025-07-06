@@ -172,8 +172,8 @@ class AWSInfrastructureSetup:
                         'AttributeType': 'S'  # GSI 파티션 키
                     },
                     {
-                        'AttributeName': 'curation_updated_at',
-                        'AttributeType': 'S'  # GSI 정렬 키
+                        'AttributeName': 'recommendation_order',
+                        'AttributeType': 'N'  # GSI 정렬 키
                     },
                     {
                         'AttributeName': 'caption_status',
@@ -193,7 +193,7 @@ class AWSInfrastructureSetup:
                                 'KeyType': 'HASH'  # 큐레이션 상태별 조회
                             },
                             {
-                                'AttributeName': 'curation_updated_at',
+                                'AttributeName': 'recommendation_order',
                                 'KeyType': 'RANGE'  # 최신순 정렬
                             }
                         ],

@@ -274,6 +274,7 @@ class ProductListWidget(QWidget):
         self.background_color = "#bcbcbc"
         self.current_sub_category = None
         self.current_main_category = None
+        self.completed_product_ids = set()  # 완료된 제품 ID들을 추적
         
         self.setup_ui()
     
@@ -430,7 +431,7 @@ class ProductListWidget(QWidget):
         
         # sub_category가 없으면 기본값 사용
         if sub_category is None:
-            sub_category = self.current_sub_category or 1005
+            sub_category = self.current_sub_category 
         
         # 현재 서브 카테고리 업데이트
         self.current_sub_category = sub_category
@@ -495,8 +496,19 @@ class ProductListWidget(QWidget):
             # 캐시에 현재 페이지 제품 설정
             self.image_cache.set_current_page_products(product_ids)
             
-            # 이전 페이지 캐시 정리
-            self.image_cache.clear_non_current_page_cache()
+            # 현재 페이지의 제품들 중 완료된 제품들을 추적에 추가
+            for product in self.current_products:
+                product_id = product.get('product_id')
+                if product_id and product.get('current_status') == 'COMPLETED':
+                    self.completed_product_ids.add(product_id)
+            
+            # 완료된 제품들의 캐시 정리 (현재 페이지가 아닌 것들만)
+            completed_ids_to_remove = [pid for pid in self.completed_product_ids if pid not in product_ids]
+            if completed_ids_to_remove:
+                self.image_cache.clear_non_current_page_cache(completed_ids_to_remove)
+                # 정리된 제품들을 추적에서 제거
+                for pid in completed_ids_to_remove:
+                    self.completed_product_ids.discard(pid)
             
             # 캐시에 이미지가 이미 있는지 확인
             cached_count = 0
@@ -666,6 +678,11 @@ class ProductListWidget(QWidget):
                 product_data['current_status'] = new_status
                 item.setData(Qt.UserRole, product_data)
                 
+                # 완료된 제품 추적
+                if new_status == 'COMPLETED':
+                    self.completed_product_ids.add(product_id)
+                    logger.debug(f"제품 {product_id}가 완료 상태로 변경되어 추적 목록에 추가됨")
+                
                 # 위젯 업데이트
                 item_widget = self.product_list.itemWidget(item)
                 if isinstance(item_widget, ProductItem):
@@ -699,6 +716,7 @@ class ProductListWidget(QWidget):
             self.product_list.clear()
             self.current_products.clear()
             self.last_evaluated_key = None
+            self.completed_product_ids.clear()  # 완료된 제품 ID 추적 정리
             
         except Exception as e:
             logger.error(f"ProductListWidget 정리 중 오류: {str(e)}")
