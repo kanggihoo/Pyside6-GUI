@@ -478,7 +478,7 @@ class AWSManager:
                     ':status': {'S': status}
                 },
                 'Limit': limit,
-                'ScanIndexForward': False  # 최신순 정렬
+                'ScanIndexForward': True # 무신사 추천순서(order)깂이 낮은게 먼저 -> 오름차순 
             }
             
             if exclusive_start_key:

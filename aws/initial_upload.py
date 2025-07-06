@@ -616,7 +616,7 @@ def main():
         data_path: str = 'TOP'
         region: str = 'ap-northeast-2'
         profile: str = None
-        max_products: int|None = 2
+        max_products: int|None = None
         dry_run: bool = False
     
     try:

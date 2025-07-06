@@ -391,7 +391,7 @@ class UrlImageViewerDialog(QDialog):
         return segments_dir
 
     def _save_as_thumbnail(self, pixmap: QPixmap, save_path: Path) -> bool:
-        """픽스맵을 512px 썸네일로 저장"""
+        """픽스맵을 64x64px 썸네일로 저장"""
         try:
             # QPixmap을 임시 바이트 배열로 변환
             from PySide6.QtCore import QBuffer, QIODevice
@@ -415,8 +415,8 @@ class UrlImageViewerDialog(QDialog):
                 else:
                     pil_image = pil_image.convert('RGB')
             
-            # 썸네일 생성 (가장 긴 변을 512로 고정, 비율 유지)
-            pil_image.thumbnail((512, 512), Image.Resampling.LANCZOS)
+            # 썸네일 생성 (가장 긴 변을 640로 고정, 비율 유지)
+            pil_image.thumbnail((640, 640), Image.Resampling.LANCZOS)
             
             # JPEG로 저장 (고품질)
             pil_image.save(save_path, 'JPEG', quality=95, optimize=True)
