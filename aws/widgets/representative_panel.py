@@ -73,10 +73,10 @@ class RepresentativePanel(QWidget):
         self.setup_header(layout)
         
         # 대표 이미지 영역 (모델, 정면 누끼, 후면 누끼)
-        self.setup_main_representative_area(layout)
+        self.setup_main_representative_area(layout, stretch=1)
         
         # 제품 색상 영역 (여러 색상의 정면 누끼)
-        self.setup_color_variants_area(layout)
+        self.setup_color_variants_area(layout, stretch=1)
         
         # 하단 컨트롤
         self.setup_bottom_controls(layout)
@@ -105,17 +105,17 @@ class RepresentativePanel(QWidget):
         
         parent_layout.addWidget(header_frame)
     
-    def setup_main_representative_area(self, parent_layout):
+    def setup_main_representative_area(self, parent_layout, stretch=1):
         """대표 이미지 영역 설정 (모델, 정면 누끼, 후면 누끼)"""
         main_frame = QFrame()
         main_frame.setStyleSheet("background-color: #e8f5e8; color: #212529; border: 2px solid #28a745; border-radius: 5px;")
         main_layout = QVBoxLayout(main_frame)
         main_layout.setContentsMargins(5, 5, 5, 5)
         
-        # 제목
+        # 제목 (높이 비율: 1)
         main_title = QLabel("대표 이미지 (대표 색상)")
         main_title.setStyleSheet("font-weight: bold; color: #155724; background-color: transparent; font-size: 14px; padding-bottom: 5px;")
-        main_layout.addWidget(main_title)
+        main_layout.addWidget(main_title, 1)  # stretch=1로 비율 설정
         
         # 설명
         # desc_label = QLabel("동일한 색상의 모델 착용, 정면 누끼, 후면 누끼 이미지를 선정해주세요.")
@@ -123,23 +123,23 @@ class RepresentativePanel(QWidget):
         # desc_label.setWordWrap(True)
         # main_layout.addWidget(desc_label)
         
-        # 대표 이미지 그리드
+        # 대표 이미지 그리드 (높이 비율: 8 - 가장 큰 비중)
         self.main_rep_grid_widget = QWidget()
         self.main_rep_grid_layout = QHBoxLayout(self.main_rep_grid_widget)
         self.main_rep_grid_layout.setSpacing(5)
         self.main_rep_grid_layout.setContentsMargins(5, 5, 5, 5)
         
-        main_layout.addWidget(self.main_rep_grid_widget)
+        main_layout.addWidget(self.main_rep_grid_widget, 8)  # stretch=8로 높은 비중
         
-        # 상태 표시
+        # 상태 표시 (높이 비율: 1)
         self.main_status_label = QLabel("대표 이미지 3개를 선정해주세요")
         self.main_status_label.setAlignment(Qt.AlignCenter)
         self.main_status_label.setStyleSheet("color: #155724; background-color: #d4edda; font-size: 10px; padding: 3px; border-radius: 3px;")
-        main_layout.addWidget(self.main_status_label)
+        main_layout.addWidget(self.main_status_label, 1)  # stretch=1로 비율 설정
         
-        parent_layout.addWidget(main_frame)
+        parent_layout.addWidget(main_frame, stretch)
     
-    def setup_color_variants_area(self, parent_layout):
+    def setup_color_variants_area(self, parent_layout, stretch=2):
         """제품 색상 영역 설정 (여러 색상의 정면 누끼)"""
         color_frame = QFrame()
         color_frame.setStyleSheet("background-color: #e3f2fd; color: #212529; border: 2px solid #007bff; border-radius: 2px;")
@@ -223,7 +223,7 @@ class RepresentativePanel(QWidget):
         self.color_status_label.setStyleSheet("color: #0c4a60; background-color: #d1ecf1; font-size: 8px; padding: 3px; border-radius: 3px;")
         color_layout.addWidget(self.color_status_label)
         
-        parent_layout.addWidget(color_frame)
+        parent_layout.addWidget(color_frame, stretch)
     
     def setup_bottom_controls(self, parent_layout):
         """하단 컨트롤 설정"""

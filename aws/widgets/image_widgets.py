@@ -129,7 +129,7 @@ class RepresentativeImageWidget(QWidget):
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(3)
         
-        # 타입 레이블
+        # 타입 레이블 (높이 비율: 1)
         type_frame = QFrame()
         type_frame.setStyleSheet("background-color: #e9ecef; color: #6c757d; border-radius: 3px; border: 2px solid #ced4da;")
         type_layout = QHBoxLayout(type_frame)
@@ -162,9 +162,9 @@ class RepresentativeImageWidget(QWidget):
         remove_btn.clicked.connect(self.on_remove_clicked)
         type_layout.addWidget(remove_btn)
         
-        layout.addWidget(type_frame)
+        layout.addWidget(type_frame, 1)  # stretch=1로 높이 비율 설정
         
-        # 이미지 표시 프레임
+        # 이미지 표시 프레임 (높이 비율: 8 - 가장 큰 비중)
         self.image_frame = QFrame()
         self.image_frame.setFrameStyle(QFrame.Box)
         self.image_frame.setLineWidth(2)
@@ -192,9 +192,9 @@ class RepresentativeImageWidget(QWidget):
         """)
         
         frame_layout.addWidget(self.image_label)
-        layout.addWidget(self.image_frame)
+        layout.addWidget(self.image_frame, 8)  # stretch=8로 높은 비중
         
-        # 파일명 레이블
+        # 파일명 레이블 (높이 비율: 1)
         filename = self.image_data.get('filename', self.image_data.get('url', '').split('/')[-1])
         
         # Segment 이미지인 경우 친숙한 표시명 사용
@@ -214,7 +214,7 @@ class RepresentativeImageWidget(QWidget):
         self.filename_label.setAlignment(Qt.AlignCenter)
         self.filename_label.setWordWrap(True)
         self.filename_label.setStyleSheet("font-size: 8px; color: #333; background-color: white; max-height: 25px; padding: 2px;")
-        layout.addWidget(self.filename_label)
+        layout.addWidget(self.filename_label, 1)  # stretch=1로 높이 비율 설정
     
     def closeEvent(self, event):
         """위젯 닫힐 때 호출"""
@@ -403,7 +403,7 @@ class RepresentativeImageWidget(QWidget):
             
         try:
             # 기존 image_viewer.py의 플레이스홀더 로직 참조
-            placeholder = QPixmap(140, 140)
+            placeholder = QPixmap(150, 150)
             placeholder.fill(QColor(245, 245, 245))  # 연한 회색 배경
             
             # 텍스트 그리기
