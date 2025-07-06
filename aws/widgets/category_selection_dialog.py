@@ -285,15 +285,17 @@ class CategorySelectionDialog(QDialog):
         """선택 정보 업데이트"""
         if self.selected_main_category and self.selected_sub_category:
             # 선택된 카테고리의 제품 수 정보
-            product_count = 0
             if self.categories_info:
-                product_count = self.categories_info.categories[self.selected_main_category][self.selected_sub_category].total
+                selected_info = self.categories_info.categories[self.selected_main_category][self.selected_sub_category]
             
             info_text = f"""
                 선택된 카테고리:
                 • 메인 카테고리: {self.selected_main_category}
                 • 서브 카테고리: {self.selected_sub_category}
-                • 제품 수: {product_count:,}개
+                • 제품 수: {selected_info.total:,}개
+                    • 미정: {selected_info.pending:,}개
+                    • 완료: {selected_info.completed:,}개
+                    • 보류: {selected_info.passed:,}개
 
                 이 카테고리로 큐레이션 작업을 시작하겠습니다.
             """.strip()

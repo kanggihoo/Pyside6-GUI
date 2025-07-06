@@ -70,8 +70,21 @@ class MainWindow(QMainWindow):
         - 오른쪽: RepresentativePanel (대표 이미지 선정) -> representative_panel.py 
         """
         self.setWindowTitle("AI 데이터셋 큐레이션 도구")
-        self.setGeometry(100, 100, 1600, 900) # (x,y , width, height)
-        self.showMaximized()  # 전체화면으로 시작
+        
+        # 화면의 사용 가능한 크기 가져오기
+        available_geometry = QApplication.primaryScreen().availableGeometry()
+        
+        # 초기 윈도우 크기를 화면 크기의 80%로 설정
+        width = int(available_geometry.width() * 0.8)
+        height = int(available_geometry.height() * 0.8)
+        x = (available_geometry.width() - width) // 2
+        y = (available_geometry.height() - height) // 2
+        
+        # 최소 크기 설정
+        self.setMinimumSize(1200, 800)
+        
+        # 초기 위치와 크기 설정
+        self.setGeometry(x, y, width, height)
         
         # 메뉴바 설정(앱 상단 메뉴바 설정)
         self.setup_menu_bar()
@@ -100,16 +113,24 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.representative_panel)
         
         # 패널 간 참조 설정
-
         self.main_image_viewer.set_representative_panel(self.representative_panel)
         # RepresentativePanel에 MainImageViewer 참조 설정
         self.representative_panel.set_main_image_viewer(self.main_image_viewer)
         
         # 스플리터 비율 설정 - (왼쪽 , 중앙 , 오른쪽 패널 width 비율)
-        splitter.setSizes([350, 900, 350])
+        total_width = self.width()
+        splitter.setSizes([
+            int(total_width * 0.1),  # 왼쪽 패널 20%
+            int(total_width * 0.6),  # 중앙 패널 60%
+            int(total_width * 0.3)   # 오른쪽 패널 20%
+        ])
+        
         
         # 상태바 설정
         self.setup_status_bar()
+        
+        # 최대화 상태로 시작
+        self.showMaximized()
     
     def setup_menu_bar(self):
         """

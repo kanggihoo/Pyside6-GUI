@@ -36,6 +36,7 @@ class PageImageDownloadThread(QThread):
         """스레드 실행"""
         try:
             total_tasks = len(self.download_tasks)
+            logger.info(f"시작: 총 {total_tasks}개 이미지 다운로드")
             
             for i, task in enumerate(self.download_tasks):
                 if self._stop_requested:
@@ -47,6 +48,9 @@ class PageImageDownloadThread(QThread):
                     filename = task['filename']
                     url = task['url']
                     
+                    logger.debug(f"다운로드 시도 [{i+1}/{total_tasks}]: {product_id}/{folder}/{filename}")
+                    logger.debug(f"URL: {url}")
+                    
                     # meta.json인 경우 특별 처리
                     if folder == 'meta' and filename == 'meta.json':
                         cache_path = self.cache_dir / product_id / filename
@@ -56,16 +60,20 @@ class PageImageDownloadThread(QThread):
                     
                     # 이미 존재하면 건너뛰기
                     if cache_path.exists():
+                        logger.debug(f"이미 캐시됨: {cache_path}")
                         self.image_downloaded.emit(product_id, folder, filename)
                         self.progress_updated.emit(i + 1, total_tasks)
                         continue
                     
                     # 디렉토리 생성
                     cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    logger.debug(f"캐시 경로 생성: {cache_path}")
                     
                     # HTTP 요청으로 파일 다운로드
+                    logger.debug(f"HTTP GET 요청 시작: {url}")
                     response = requests.get(url, timeout=30, stream=True)
                     response.raise_for_status()
+                    logger.debug(f"HTTP 응답 성공: {response.status_code}")
                     
                     # 파일로 저장
                     with open(cache_path, 'wb') as f:
@@ -73,6 +81,8 @@ class PageImageDownloadThread(QThread):
                             if self._stop_requested:
                                 break
                             f.write(chunk)
+                    
+                    logger.debug(f"파일 저장 완료: {cache_path}")
                     
                     if not self._stop_requested:
                         self.image_downloaded.emit(product_id, folder, filename)
@@ -84,6 +94,7 @@ class PageImageDownloadThread(QThread):
                     continue
             
             if not self._stop_requested:
+                logger.info("모든 이미지 다운로드 완료")
                 self.download_completed.emit()
                 
         except Exception as e:

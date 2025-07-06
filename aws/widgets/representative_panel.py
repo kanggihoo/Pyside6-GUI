@@ -26,15 +26,6 @@ from .main_image_viewer import CurationWorker
 logger = logging.getLogger(__name__)
 
 
-
-
-
-
-
-
-
-
-
 class RepresentativePanel(QWidget):
     """대표 이미지 패널 위젯 \n
     - curation_completed : Signal(str) 큐레이션 완료 시 상품 ID 전달
@@ -75,8 +66,8 @@ class RepresentativePanel(QWidget):
     def setup_ui(self):
         """UI 설정"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
         
         # 헤더
         self.setup_header(layout)
@@ -94,20 +85,22 @@ class RepresentativePanel(QWidget):
         """헤더 설정"""
         header_frame = QFrame()
         header_frame.setStyleSheet("background-color: #f8f9fa; color: #212529; border-bottom: 1px solid #dee2e6; border-radius: 5px;")
-        header_layout = QVBoxLayout(header_frame)
-        header_layout.setContentsMargins(15, 10, 15, 10)
+        header_layout = QHBoxLayout(header_frame)  # QVBoxLayout에서 QHBoxLayout으로 변경
+        header_layout.setContentsMargins(10, 5, 10, 5)
         
         # 제목
         title_label = QLabel("대표 이미지")
         title_font = QFont()
         title_font.setBold(True)
-        title_font.setPointSize(14)
+        title_font.setPointSize(10)
         title_label.setFont(title_font)
         header_layout.addWidget(title_label)
         
+        header_layout.addStretch(5)  # 제목과 상품 정보 사이에 공간 추가
+        
         # 상품 정보
         self.product_info_label = QLabel("상품을 선택해주세요")
-        self.product_info_label.setStyleSheet("color: #495057; background-color: transparent; font-size: 11px;")
+        self.product_info_label.setStyleSheet("color: #495057; background-color: transparent; font-size: 8px;")
         header_layout.addWidget(self.product_info_label)
         
         parent_layout.addWidget(header_frame)
@@ -117,23 +110,23 @@ class RepresentativePanel(QWidget):
         main_frame = QFrame()
         main_frame.setStyleSheet("background-color: #e8f5e8; color: #212529; border: 2px solid #28a745; border-radius: 5px;")
         main_layout = QVBoxLayout(main_frame)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(5, 5, 5, 5)
         
         # 제목
         main_title = QLabel("대표 이미지 (대표 색상)")
-        main_title.setStyleSheet("font-weight: bold; color: #155724; background-color: transparent; font-size: 14px; padding-bottom: 10px;")
+        main_title.setStyleSheet("font-weight: bold; color: #155724; background-color: transparent; font-size: 14px; padding-bottom: 5px;")
         main_layout.addWidget(main_title)
         
         # 설명
-        desc_label = QLabel("동일한 색상의 모델 착용, 정면 누끼, 후면 누끼 이미지를 선정해주세요.")
-        desc_label.setStyleSheet("color: #495057; background-color: transparent; font-size: 11px; padding-bottom: 10px;")
-        desc_label.setWordWrap(True)
-        main_layout.addWidget(desc_label)
+        # desc_label = QLabel("동일한 색상의 모델 착용, 정면 누끼, 후면 누끼 이미지를 선정해주세요.")
+        # desc_label.setStyleSheet("color: #495057; background-color: transparent; font-size: 11px; padding-bottom: 10px;")
+        # desc_label.setWordWrap(True)
+        # main_layout.addWidget(desc_label)
         
         # 대표 이미지 그리드
         self.main_rep_grid_widget = QWidget()
         self.main_rep_grid_layout = QHBoxLayout(self.main_rep_grid_widget)
-        self.main_rep_grid_layout.setSpacing(10)
+        self.main_rep_grid_layout.setSpacing(5)
         self.main_rep_grid_layout.setContentsMargins(5, 5, 5, 5)
         
         main_layout.addWidget(self.main_rep_grid_widget)
@@ -141,7 +134,7 @@ class RepresentativePanel(QWidget):
         # 상태 표시
         self.main_status_label = QLabel("대표 이미지 3개를 선정해주세요")
         self.main_status_label.setAlignment(Qt.AlignCenter)
-        self.main_status_label.setStyleSheet("color: #155724; background-color: #d4edda; font-size: 11px; padding: 6px; border-radius: 3px;")
+        self.main_status_label.setStyleSheet("color: #155724; background-color: #d4edda; font-size: 10px; padding: 3px; border-radius: 3px;")
         main_layout.addWidget(self.main_status_label)
         
         parent_layout.addWidget(main_frame)
@@ -149,19 +142,19 @@ class RepresentativePanel(QWidget):
     def setup_color_variants_area(self, parent_layout):
         """제품 색상 영역 설정 (여러 색상의 정면 누끼)"""
         color_frame = QFrame()
-        color_frame.setStyleSheet("background-color: #e3f2fd; color: #212529; border: 2px solid #007bff; border-radius: 5px;")
+        color_frame.setStyleSheet("background-color: #e3f2fd; color: #212529; border: 2px solid #007bff; border-radius: 2px;")
         color_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         color_layout = QVBoxLayout(color_frame)
-        color_layout.setContentsMargins(10, 10, 10, 10)
+        color_layout.setContentsMargins(5, 5, 5, 5)
         
         # 제목
         color_title = QLabel("제품 색상")
-        color_title.setStyleSheet("font-weight: bold; color: #0c4a60; background-color: transparent; font-size: 14px; padding-bottom: 10px;")
+        color_title.setStyleSheet("font-weight: bold; color: #0c4a60; background-color: transparent; font-size: 10px; padding-bottom: 2px;")
         color_layout.addWidget(color_title)
         
         # 설명
-        desc_label = QLabel("대표 이미지 3개 선정 완료 후, 다른 색상의 정면 누끼 이미지를 최소 1개 이상 추가해야 큐레이션을 완료할 수 있습니다.")
-        desc_label.setStyleSheet("color: #495057; background-color: transparent; font-size: 11px; padding-bottom: 10px;")
+        desc_label = QLabel("대표 이미지 3개 선정 후, 다른 색상의 정면 누끼 이미지를 최소 1개 이상 선택.")
+        desc_label.setStyleSheet("color: #495057; background-color: transparent; font-size: 11px; padding-bottom: 2px;")
         desc_label.setWordWrap(True)
         color_layout.addWidget(desc_label)
         
@@ -227,7 +220,7 @@ class RepresentativePanel(QWidget):
         # 상태 표시
         self.color_status_label = QLabel("대표 이미지 3개를 먼저 선정해주세요")
         self.color_status_label.setAlignment(Qt.AlignCenter)
-        self.color_status_label.setStyleSheet("color: #0c4a60; background-color: #d1ecf1; font-size: 11px; padding: 6px; border-radius: 3px;")
+        self.color_status_label.setStyleSheet("color: #0c4a60; background-color: #d1ecf1; font-size: 8px; padding: 3px; border-radius: 3px;")
         color_layout.addWidget(self.color_status_label)
         
         parent_layout.addWidget(color_frame)
@@ -235,13 +228,13 @@ class RepresentativePanel(QWidget):
     def setup_bottom_controls(self, parent_layout):
         """하단 컨트롤 설정"""
         controls_frame = QFrame()
-        controls_frame.setStyleSheet("background-color: #f8f9fa; color: #212529; border-top: 1px solid #dee2e6; border-radius: 5px;")
+        controls_frame.setStyleSheet("background-color: #f8f9fa; color: #212529; border-top: 1px solid #dee2e6; border-radius: 3px;")
         controls_layout = QVBoxLayout(controls_frame)
-        controls_layout.setContentsMargins(15, 10, 15, 10)
+        controls_layout.setContentsMargins(5, 5, 5, 5)
         
         # 선택 요약
         self.selection_summary = QLabel("선택된 대표 이미지: 0개")
-        self.selection_summary.setStyleSheet("font-weight: bold; color: #212529; background-color: transparent; padding-bottom: 10px;")
+        self.selection_summary.setStyleSheet("font-weight: bold; color: #212529; background-color: transparent; padding-bottom: 2px;")
         controls_layout.addWidget(self.selection_summary)
         
         # 버튼 영역
@@ -254,8 +247,8 @@ class RepresentativePanel(QWidget):
                 background-color: #6c757d;
                 color: white;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                padding: 4px 8px;
+                border-radius: 3px;
             }
             QPushButton:hover {
                 background-color: #545b62;
@@ -271,8 +264,8 @@ class RepresentativePanel(QWidget):
                 background-color: #ffc107;
                 color: #212529;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                padding: 4px 8px;
+                border-radius: 3px;
                 font-weight: bold;
             }
             QPushButton:hover {
@@ -292,8 +285,8 @@ class RepresentativePanel(QWidget):
                 background-color: #28a745;
                 color: white;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                padding: 4px 8px;
+                border-radius: 3px;
                 font-weight: bold;
             }
             QPushButton:hover {

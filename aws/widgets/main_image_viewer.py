@@ -774,17 +774,33 @@ class MainImageViewer(QWidget):
         # 탭 순서 설정으로 포커스 받을 수 있도록
         self.setTabOrder(self, self)
         
-        # 헤더 설정
-        self.setup_header(layout)
+        # 헤더 영역 (5%)
+        header_container = QWidget()
+        header_layout = QVBoxLayout(header_container)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        self.setup_header(header_layout)
+        layout.addWidget(header_container, stretch=5)
         
-        # 이미지 영역 설정
-        self.setup_image_area(layout)
+        # 이미지 영역 (80%)
+        image_container = QWidget()
+        image_layout = QVBoxLayout(image_container)
+        image_layout.setContentsMargins(0, 0, 0, 0)
+        self.setup_image_area(image_layout)
+        layout.addWidget(image_container, stretch=80)
         
-        # 모드 선택 버튼 영역 추가
-        self.setup_mode_selection(layout)
+        # 모드 선택 영역 (10%)
+        mode_container = QWidget()
+        mode_layout = QVBoxLayout(mode_container)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        self.setup_mode_selection(mode_layout)
+        layout.addWidget(mode_container, stretch=10)
         
-        # 기존 컨트롤 영역은 간소화
-        self.setup_controls(layout)
+        # 컨트롤 영역 (5%)
+        control_container = QWidget()
+        control_layout = QVBoxLayout(control_container)
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        self.setup_controls(control_layout)
+        layout.addWidget(control_container, stretch=5)
         
         # 키보드 단축키 설정
         self.setup_shortcuts()
@@ -1171,6 +1187,12 @@ class MainImageViewer(QWidget):
             
             # color_info 키 값 추출
             color_info = meta_data.get('color_info')
+            is_size_info = meta_data.get('is_size_detail_info')
+            num_likes = meta_data.get('num_likes')
+            review_count = meta_data.get('review_count')
+            avg_rating = meta_data.get('avg_rating')
+            
+            meta_info = f"사이즈 정보: {is_size_info} , 좋아요 수: {num_likes}, 리뷰 수: {review_count}, 평균 평점: {avg_rating}"
             
             if not color_info:
                 self.color_info_label.setVisible(False)
@@ -1179,19 +1201,19 @@ class MainImageViewer(QWidget):
             # 색상 정보가 문자열인지 리스트인지 확인
             if isinstance(color_info, str):
                 if color_info == "one_color":
-                    display_text = "색상 정보: 단일 색상 (참고용)"
+                    display_text = "색상 정보: 단일 색상 (참고용)" +"\n" + meta_info
                     bg_color = "#e8f5e8"
                     border_color = "#4caf50"
                     text_color = "#2e7d32"
                 else:
-                    display_text = f"색상 정보: {color_info} (참고용)"
+                    display_text = f"색상 정보: {color_info} (참고용)" +"\n" + meta_info
                     bg_color = "#f0f8ff"
                     border_color = "#4682b4"
                     text_color = "#2c3e50"
             elif isinstance(color_info, list):
                 color_count = len(color_info)
                 colors_text = ", ".join(str(c) for c in color_info)
-                display_text = f"색상 정보: {color_count}개 색상 ({colors_text}) - 참고용"
+                display_text = f"색상 정보: {color_count}개 색상 ({colors_text}) - 참고용" +"\n" + meta_info
                 
                 # 색상 개수에 따라 배경색 변경
                 if color_count == 1:
@@ -1207,7 +1229,7 @@ class MainImageViewer(QWidget):
                     border_color = "#f44336"
                     text_color = "#c62828"
             else:
-                display_text = f"색상 정보: {str(color_info)} (참고용)"
+                display_text = f"색상 정보: {str(color_info)} (참고용)" +"\n" + meta_info
                 bg_color = "#f0f8ff"
                 border_color = "#4682b4"
                 text_color = "#2c3e50"
@@ -1217,13 +1239,13 @@ class MainImageViewer(QWidget):
             self.color_info_label.setStyleSheet(f"""
                 QLabel {{
                     background-color: {bg_color};
-                    border: 2px solid {border_color};
+                    border: 1px solid {border_color};
                     color: {text_color};
-                    padding: 8px 12px;
-                    border-radius: 6px;
+                    padding: 4px 6px;
+                    border-radius: 3px;
                     font-weight: bold;
-                    font-size: 12px;
-                    margin: 0px 10px;
+                    font-size: 10px;
+                    margin: 0px 5px;
                 }}
             """)
             self.color_info_label.setVisible(True)
@@ -1235,19 +1257,19 @@ class MainImageViewer(QWidget):
     def setup_header(self, parent_layout):
         """헤더 설정"""
         header_frame = QFrame()
-        header_frame.setStyleSheet("background-color: #f8f9fa; color: #212529; border-bottom: 1px solid #dee2e6; border-radius: 5px;")
+        header_frame.setStyleSheet("background-color: #f8f9fa; color: #212529; border-bottom: 1px solid #dee2e6; border-radius: 3px;")
         header_layout = QHBoxLayout(header_frame)
-        header_layout.setContentsMargins(15, 10, 15, 10)
+        header_layout.setContentsMargins(5, 10, 5, 10)
         
         # 제목
         title_label = QLabel("이미지 뷰어")
         title_font = QFont()
         title_font.setBold(True)
-        title_font.setPointSize(14)
+        title_font.setPointSize(10)
         title_label.setFont(title_font)
         header_layout.addWidget(title_label)
         
-        header_layout.addStretch()
+        # header_layout.addStretch()
         
         # 중앙 영역: 이미지 정보와 색상 정보 (수평 배치)
         info_layout = QHBoxLayout()
@@ -1256,8 +1278,8 @@ class MainImageViewer(QWidget):
         self.image_info_label = QLabel("이미지를 선택해주세요")
         self.image_info_label.setStyleSheet("color: #495057; background-color: transparent;")
         self.image_info_label.setAlignment(Qt.AlignCenter)
-        self.image_info_label.setMinimumWidth(200)  # 최소 폭 설정
-        info_layout.addWidget(self.image_info_label, 1)  # stretch factor 1
+        self.image_info_label.setMinimumWidth(70)  # 최소 폭 설정
+        info_layout.addWidget(self.image_info_label)  # stretch factor 1
         
         # 색상 정보 (기본적으로 숨김, 더 넓은 공간 할당)
         self.color_info_label = QLabel("")
@@ -1265,14 +1287,14 @@ class MainImageViewer(QWidget):
         self.color_info_label.setWordWrap(True)
         self.color_info_label.setAlignment(Qt.AlignCenter)
         self.color_info_label.setMinimumWidth(300)  # 최소 폭 설정
-        self.color_info_label.setMaximumWidth(600)  # 최대 폭 제한
+        self.color_info_label.setMaximumWidth(700)  # 최대 폭 제한
         info_layout.addWidget(self.color_info_label, 2)  # stretch factor 2 (더 넓은 공간)
         
         header_layout.addLayout(info_layout)
         
         # 도움말 버튼 (meta.json 보기)
         self.help_button = QPushButton("📋 상품 정보")
-        self.help_button.setFixedHeight(35)
+        self.help_button.setFixedHeight(25)
         self.help_button.setStyleSheet("""
             QPushButton {
                 background-color: #17a2b8;
@@ -1324,7 +1346,7 @@ class MainImageViewer(QWidget):
         
         # 폴더 이름과 이미지 수
         folder_info_label = QLabel(f"{folder_name.upper()} 폴더")
-        folder_info_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #212529; background-color: transparent;")
+        folder_info_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #212529; background-color: transparent;")
         info_layout.addWidget(folder_info_label)
         
         info_layout.addStretch()
@@ -1345,8 +1367,8 @@ class MainImageViewer(QWidget):
         # 이미지 그리드 위젯
         grid_widget = QWidget()
         grid_layout = QGridLayout(grid_widget)
-        grid_layout.setSpacing(15)
-        grid_layout.setContentsMargins(15, 15, 15, 15)
+        grid_layout.setSpacing(5)
+        grid_layout.setContentsMargins(5, 5, 5, 5)
         
         scroll_area.setWidget(grid_widget)
         layout.addWidget(scroll_area)
@@ -1389,13 +1411,13 @@ class MainImageViewer(QWidget):
             QFrame {
                 background-color: #f8f9fa; 
                 border: 1px solid #dee2e6; 
-                border-radius: 8px;
-                padding: 10px;
+                border-radius: 4px;
+                padding: 5px;
             }
         """)
         mode_layout = QVBoxLayout(mode_frame)
-        mode_layout.setContentsMargins(15, 10, 15, 10)
-        mode_layout.setSpacing(8)
+        mode_layout.setContentsMargins(10, 5, 10, 5)
+        mode_layout.setSpacing(4)
         
         # 안내 레이블
         info_label = QLabel("대표 이미지 선택 및 이미지 관리 (단축키: 1-4, V, ESC, Ctrl+Z):")
@@ -1416,16 +1438,16 @@ class MainImageViewer(QWidget):
         
         for mode_key, mode_text, color, hover_color in mode_configs:
             btn = QPushButton(mode_text)
-            btn.setFixedHeight(40)
+            btn.setFixedHeight(30)
             btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {color};
                     color: white;
                     border: none;
-                    padding: 8px 16px;
-                    border-radius: 6px;
+                    padding: 4px 8px;
+                    border-radius: 3px;
                     font-weight: bold;
-                    font-size: 12px;
+                    font-size: 10px;
                 }}
                 QPushButton:hover {{
                     background-color: {hover_color};
@@ -1447,16 +1469,16 @@ class MainImageViewer(QWidget):
         
         # 취소 버튼
         cancel_btn = QPushButton("(ESC) 선택 취소")
-        cancel_btn.setFixedHeight(40)
+        cancel_btn.setFixedHeight(30)
         cancel_btn.setStyleSheet("""
             QPushButton {
                 background-color: #6c757d;
                 color: white;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 6px;
+                padding: 4px 8px;
+                border-radius: 3px;
                 font-weight: bold;
-                font-size: 12px;
+                font-size: 10px;
             }
             QPushButton:hover {
                 background-color: #5a6268;
@@ -1509,13 +1531,13 @@ class MainImageViewer(QWidget):
         controls_frame = QFrame()
         controls_frame.setStyleSheet("background-color: #f8f9fa; color: #212529; border-top: 1px solid #dee2e6; border-radius: 5px;")
         controls_layout = QVBoxLayout(controls_frame)
-        controls_layout.setContentsMargins(15, 10, 15, 10)
+        controls_layout.setContentsMargins(10, 5, 10, 5)
         controls_layout.setSpacing(10)
         
-        # 상단: 안내 메시지
-        info_label = QLabel("💡 Segment 이미지(S3 및 로컬 생성)를 Text 폴더로 이동(M), 되돌리기(Ctrl+Z) 기능을 사용하세요")
-        info_label.setStyleSheet("color: #6c757d; font-size: 11px; font-style: italic;")
-        controls_layout.addWidget(info_label)
+        # # 상단: 안내 메시지
+        # info_label = QLabel("💡 Segment 이미지(S3 및 로컬 생성)를 Text 폴더로 이동(M), 되돌리기(Ctrl+Z) 기능을 사용하세요")
+        # info_label.setStyleSheet("color: #6c757d; font-size: 11px; font-style: italic;")
+        # controls_layout.addWidget(info_label)
         
         # 하단: 버튼들
         buttons_layout = QHBoxLayout()
@@ -1531,10 +1553,10 @@ class MainImageViewer(QWidget):
                 background-color: #fd7e14;
                 color: white;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                padding: 4px 8px;
+                border-radius: 3px;
                 font-weight: bold;
-                font-size: 12px;
+                font-size: 10px;
             }
             QPushButton:hover {
                 background-color: #e55100;
@@ -1556,10 +1578,10 @@ class MainImageViewer(QWidget):
                 background-color: #6c757d;
                 color: white;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                padding: 4px 8px;
+                border-radius: 3px;
                 font-weight: bold;
-                font-size: 12px;
+                font-size: 10px;
             }
             QPushButton:hover {
                 background-color: #5a6268;
@@ -1582,10 +1604,10 @@ class MainImageViewer(QWidget):
                 background-color: #28a745;
                 color: white;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                padding: 4px 8px;
+                border-radius: 3px;
                 font-weight: bold;
-                font-size: 12px;
+                font-size: 10px;
             }
             QPushButton:hover {
                 background-color: #218838;

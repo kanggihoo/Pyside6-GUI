@@ -255,7 +255,7 @@ class InitialUploader:
                 
                 files_to_upload.append({
                     'local_path': file_path, # 로컬 데이터 루트 경로 기준(절대 경로)
-                    'relative_path': str(relative_path), # 상대경로(text/파일명 , segment/파일명 , meta.json))
+                    'relative_path': relative_path.as_posix(), # 상대경로(text/파일명 , segment/파일명 , meta.json))
                     'file_type': file_type, # 파일 타입
                     'size': file_path.stat().st_size # 파일 크기
                 })
@@ -606,14 +606,13 @@ def main():
         data_path: str = 'TOP'
         region: str = 'ap-northeast-2'
         profile: str = None
-        max_products: int = 2
+        max_products: int|None = None
         dry_run: bool = False
     
     try:
         # 데이터 경로 확인
         HOME_DIR = os.getcwd()
-        data_path = Path(HOME_DIR) / args.data_path
-        main_category = args.data_path
+        data_path = Path(__file__).parent.parent / args.data_path
         if not data_path.exists():
             logger.error(f"데이터 경로가 존재하지 않습니다: {data_path}")
             return 1
