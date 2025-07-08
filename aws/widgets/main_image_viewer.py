@@ -821,6 +821,9 @@ class MainImageViewer(QWidget):
     def activate_mode_button(self, mode_key: str):
         """모드 버튼 활성화"""
         try:
+            # 먼저 포커스 확실히 설정
+            self.ensure_keyboard_focus()
+            
             if mode_key == 'clear_mode':
                 self.clear_selection_mode()
             elif mode_key == 'image_viewer':
@@ -830,7 +833,6 @@ class MainImageViewer(QWidget):
             elif mode_key in self.mode_buttons:
                 button = self.mode_buttons[mode_key]
                 if button and hasattr(button, 'click'):
-                    self.setFocus()
                     button.click()
                     if hasattr(button, 'isCheckable') and button.isCheckable():
                         button.setChecked(True)
@@ -917,9 +919,33 @@ class MainImageViewer(QWidget):
             # 버튼 상태 업데이트
             self.update_all_button_states()
             
+            # 포커스 복원 (위젯 재생성 완료 후)
+            QTimer.singleShot(200, self.restore_focus_after_move)
+            
         except Exception as e:
             logger.error(f"이미지 이동 오류: {str(e)}")
             self.show_status_message(f"❌ 이미지 이동 실패: {str(e)}", error=True)
+    
+    def restore_focus_after_move(self):
+        """이미지 이동 후 포커스 복원"""
+        try:
+            # 메인 이미지 뷰어에 강력하게 포커스 설정
+            self.setFocus(Qt.OtherFocusReason)
+            self.activateWindow()
+            self.raise_()  # 위젯을 맨 앞으로
+            
+            # 키보드 포커스 정책 재설정
+            self.setFocusPolicy(Qt.StrongFocus)
+            
+            # 부모 윈도우도 활성화
+            if self.window():
+                self.window().activateWindow()
+                self.window().raise_()
+            
+            logger.debug("이미지 이동 후 포커스 복원 완료")
+            
+        except Exception as e:
+            logger.error(f"포커스 복원 오류: {str(e)}")
     
     def move_image_local(self, image_data: dict, from_folder: str, to_folder: str):
         """로컬 상태에서 이미지를 폴더 간 이동 - 메모리 안전 버전"""
@@ -995,8 +1021,8 @@ class MainImageViewer(QWidget):
             from_folder_copy = from_folder
             to_folder_copy = to_folder
             
-            QTimer.singleShot(50, lambda: self._safe_update_folder_display(from_folder_copy))
-            QTimer.singleShot(100, lambda: self._safe_update_folder_display(to_folder_copy))
+            QTimer.singleShot(50, lambda: self._safe_update_folder_display_with_focus(from_folder_copy))
+            QTimer.singleShot(100, lambda: self._safe_update_folder_display_with_focus(to_folder_copy))
             
             logger.debug(f"로컬 이미지 이동 완료: {from_folder} -> {to_folder}")
             logger.debug(f"업데이트된 키: {moved_image_data.get('key', 'N/A')}")
@@ -1004,6 +1030,43 @@ class MainImageViewer(QWidget):
         except Exception as e:
             logger.error(f"로컬 이미지 이동 오류: {str(e)}")
             raise
+    
+    def _safe_update_folder_display_with_focus(self, folder_name: str):
+        """안전한 폴더 디스플레이 업데이트 - 포커스 복원 포함"""
+        try:
+            # 기존 디스플레이 업데이트 수행
+            self._safe_update_folder_display(folder_name)
+            
+            # 업데이트 완료 후 포커스 복원 (약간의 지연 후)
+            QTimer.singleShot(50, self.ensure_keyboard_focus)
+            
+        except Exception as e:
+            logger.error(f"포커스가 포함된 폴더 디스플레이 업데이트 오류 {folder_name}: {str(e)}")
+    
+    def ensure_keyboard_focus(self):
+        """키보드 포커스 확실히 설정"""
+        try:
+            # MainImageViewer에 강력하게 포커스 설정
+            if not self.hasFocus():
+                self.setFocus(Qt.OtherFocusReason)
+                
+            # 키보드 포커스 정책 재확인
+            if self.focusPolicy() != Qt.StrongFocus:
+                self.setFocusPolicy(Qt.StrongFocus)
+            
+            # 윈도우 활성화
+            self.activateWindow()
+            
+            # 부모 윈도우가 있으면 그것도 활성화
+            parent_window = self.window()
+            if parent_window and parent_window != self:
+                parent_window.activateWindow()
+                parent_window.raise_()
+            
+            logger.debug("키보드 포커스 확실히 설정 완료")
+            
+        except Exception as e:
+            logger.error(f"키보드 포커스 설정 오류: {str(e)}")
     
     def _safe_update_folder_display(self, folder_name: str):
         """안전한 폴더 디스플레이 업데이트 - 메모리 손상 방지"""
@@ -1125,6 +1188,9 @@ class MainImageViewer(QWidget):
             
             # 버튼 상태 업데이트
             self.update_all_button_states()
+            
+            # 포커스 복원 (위젯 재생성 완료 후)
+            QTimer.singleShot(200, self.restore_focus_after_move)
             
             logger.debug(f"되돌리기 완료: {from_folder} -> {to_folder}, 파일: {filename}")
             
@@ -2321,16 +2387,23 @@ class MainImageViewer(QWidget):
     
     def mousePressEvent(self, event):
         """마우스 클릭 시 포커스 설정"""
-        self.setFocus(Qt.MouseFocusReason)
-        self.activateWindow()
-        super().mousePressEvent(event)
+        try:
+            # 강화된 포커스 설정
+            self.ensure_keyboard_focus()
+            super().mousePressEvent(event)
+        except Exception as e:
+            logger.error(f"마우스 이벤트 처리 오류: {str(e)}")
     
     def showEvent(self, event):
         """위젯이 표시될 때 포커스 설정"""
-        super().showEvent(event)
-        # 약간의 지연 후 포커스 설정 (위젯이 완전히 표시된 후)
-        QTimer.singleShot(100, lambda: self.setFocus(Qt.OtherFocusReason))
-        QTimer.singleShot(100, self.activateWindow)
+        try:
+            super().showEvent(event)
+            # 위젯이 완전히 표시된 후 포커스 설정 (다중 단계로 확실히)
+            QTimer.singleShot(50, self.ensure_keyboard_focus)
+            QTimer.singleShot(100, self.ensure_keyboard_focus)
+            QTimer.singleShot(200, self.ensure_keyboard_focus)
+        except Exception as e:
+            logger.error(f"위젯 표시 이벤트 처리 오류: {str(e)}")
     
     def eventFilter(self, obj, event):
         """이벤트 필터 - 키보드 이벤트를 우선 처리"""
@@ -2344,6 +2417,10 @@ class MainImageViewer(QWidget):
     def keyPressEvent(self, event: QKeyEvent):
         """키보드 이벤트 처리"""
         try:
+            # 키보드 이벤트 처리 전에 포커스 확인 및 강화
+            if not self.hasFocus():
+                self.ensure_keyboard_focus()
+            
             # Tab: 다음 탭으로 이동
             if event.key() == Qt.Key_Tab:
                 self.switch_to_next_tab()
@@ -2401,6 +2478,8 @@ class MainImageViewer(QWidget):
             
         except Exception as e:
             logger.error(f"키보드 이벤트 처리 오류: {str(e)}")
+            # 오류 발생 시에도 포커스 복원 시도
+            QTimer.singleShot(100, self.ensure_keyboard_focus)
         
         # 처리되지 않은 키는 부모 클래스로 전달
         super().keyPressEvent(event)

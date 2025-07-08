@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QButtonGroup, QCheckBox, QComboBox, QMessageBox,
                                QTextEdit, QSpacerItem, QSizePolicy, QDialog,
                                QRadioButton)
-from PySide6.QtCore import Qt, Signal, QSize, QTimer
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QCoreApplication
 from PySide6.QtGui import QPixmap, QFont, QColor, QPainter, QPen, QKeyEvent
 from typing import Dict, Any, List, Optional
 import logging
@@ -860,7 +860,7 @@ class RepresentativePanel(QWidget):
             
             try:
                 # 1단계: 로컬 segment 이미지들을 S3에 업로드
-                logger.info("로컬 segment 이미지 S3 업로드 시작...")
+                logger.info("로컬 segment 이미지 S3 업로드 시작")
                 
                 # 업로드할 로컬 이미지 개수 확인
                 local_images_count = 0
@@ -877,7 +877,6 @@ class RepresentativePanel(QWidget):
                     self.selection_summary.setStyleSheet("font-weight: bold; color: #007bff; background-color: transparent; padding-bottom: 10px;")
                     
                     # UI 업데이트를 위해 이벤트 루프 처리
-                    from PySide6.QtCore import QCoreApplication
                     QCoreApplication.processEvents()
                 
                 upload_success = self.upload_local_segment_images_to_s3(representative_assets)
@@ -888,7 +887,42 @@ class RepresentativePanel(QWidget):
                 
                 logger.info("로컬 segment 이미지 S3 업로드 완료")
                 
-                # 2단계: DynamoDB에 큐레이션 결과 저장 (completed_by는 자동으로 현재 AWS 사용자로 설정됨)
+                # 2단계: MainImageViewer에서 대기 중인 S3 이동 작업 처리
+                moved_filenames = []
+                if self.main_image_viewer:
+                    pending_moves = self.main_image_viewer.get_pending_moves()
+                    
+                    if pending_moves:
+                        logger.info(f"대기 중인 S3 이동 작업 {len(pending_moves)}개 처리 시작")
+                        
+                        # 진행 상황 메시지 표시
+                        self.selection_summary.setText(f"🔄 {len(pending_moves)}개 이미지를 S3에서 segment → text 폴더로 이동 중...")
+                        self.selection_summary.setStyleSheet("font-weight: bold; color: #007bff; background-color: transparent; padding-bottom: 10px;")
+                        QCoreApplication.processEvents()
+                        
+                        # S3 이동 작업 실행
+                        move_results = self.aws_manager.batch_move_s3_objects(pending_moves)
+                        
+                        # 성공한 이동 작업에서 파일명 추출
+                        # move_results는 {source_key: success} 형태로 반환됨
+                        # pending_moves는 [(source_key, dest_key), ...] 형태
+                        for source_key, dest_key in pending_moves:
+                            success = move_results.get(source_key, False)
+                            if success:
+                                # dest_key에서 파일명 추출 (예: "category/sub/product/text/filename.jpg" -> "filename.jpg")
+                                filename = dest_key.split('/')[-1]
+                                moved_filenames.append(filename)
+                                logger.info(f"S3 이동 성공: {source_key} -> {dest_key}")
+                            else:
+                                logger.error(f"S3 이동 실패: {source_key} -> {dest_key}")
+                        
+                        # pending_moves 정리
+                        self.main_image_viewer.clear_pending_moves()
+                        
+                        logger.info(f"S3 이동 완료: {len(moved_filenames)}개 파일")
+                
+                # 3단계: DynamoDB에 큐레이션 결과 저장
+                logger.info("DynamoDB 큐레이션 결과 저장 시작")
                 
                 success = self.aws_manager.update_curation_result(
                     sub_category=sub_category,
@@ -897,25 +931,48 @@ class RepresentativePanel(QWidget):
                     color_variant_images=self.color_variant_images
                 )
                 
-                if success:
-                    # 상태 통계 업데이트 (이전 상태에서 COMPLETED로 변경)
-                    if previous_status != 'COMPLETED':
-                        status_changes = {previous_status: -1, 'COMPLETED': 1}
-                        stats_success = self.aws_manager.update_category_status_stats_atomic(
-                            main_category, sub_category, status_changes
-                        )
-                        if stats_success:
-                            logger.info(f"상태 통계 업데이트 성공: {main_category}-{sub_category}-{product_id} ({previous_status} -> COMPLETED)")
-                        else:
-                            logger.warning(f"상태 통계 업데이트 실패: {main_category}-{sub_category}-{product_id}")
-                    
-                    # 성공 메시지를 패널 내에서 표시 및 즉시 초기화
-                    self.show_complete_success_status(product_id)
-                    
-                    # 큐레이션 완료 알림 (저장된 product_id 사용)
-                    self.curation_completed.emit(product_id)
-                else:
+                if not success:
                     QMessageBox.warning(self, "오류", "큐레이션 결과 저장에 실패했습니다.")
+                    return
+                
+                # 4단계: text 폴더로 이동된 파일들을 DynamoDB text 필드에 추가
+                if moved_filenames:
+                    logger.info(f"DynamoDB text 필드에 {len(moved_filenames)}개 파일명 추가 시작")
+                    
+                    # 진행 상황 메시지 표시
+                    self.selection_summary.setText(f"🔄 DynamoDB에 이동된 {len(moved_filenames)}개 파일 정보 업데이트 중...")
+                    self.selection_summary.setStyleSheet("font-weight: bold; color: #007bff; background-color: transparent; padding-bottom: 10px;")
+                    QCoreApplication.processEvents()
+                    
+                    # text 필드에 파일명들 추가
+                    text_update_success = self.aws_manager.append_files_to_text_field(
+                        sub_category=sub_category,
+                        product_id=product_id,
+                        filenames=moved_filenames
+                    )
+                    
+                    if text_update_success:
+                        logger.info(f"DynamoDB text 필드 업데이트 성공: {moved_filenames}")
+                    else:
+                        logger.warning(f"DynamoDB text 필드 업데이트 실패: {moved_filenames}")
+                        # text 필드 업데이트 실패는 치명적이지 않으므로 계속 진행
+                
+                # 5단계: 상태 통계 업데이트
+                if previous_status != 'COMPLETED':
+                    status_changes = {previous_status: -1, 'COMPLETED': 1}
+                    stats_success = self.aws_manager.update_category_status_stats_atomic(
+                        main_category, sub_category, status_changes
+                    )
+                    if stats_success:
+                        logger.info(f"상태 통계 업데이트 성공: {main_category}-{sub_category}-{product_id} ({previous_status} -> COMPLETED)")
+                    else:
+                        logger.warning(f"상태 통계 업데이트 실패: {main_category}-{sub_category}-{product_id}")
+                
+                # 성공 메시지를 패널 내에서 표시 및 즉시 초기화
+                self.show_complete_success_status(product_id)
+                
+                # 큐레이션 완료 알림 (저장된 product_id 사용)
+                self.curation_completed.emit(product_id)
                     
             except Exception as e:
                 logger.error(f"큐레이션 완료 처리 중 오류: {e}")

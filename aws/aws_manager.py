@@ -1157,7 +1157,83 @@ class AWSManager:
             logger.error(f"통계 정보 조회 실패: {e}")
             return {}
 
-
+    def append_files_to_text_field(self, sub_category: int, product_id: str, 
+                                  filenames: list[str]) -> bool:
+        """
+        DynamoDB의 text 필드에 파일명들을 추가합니다.
+        SET과 list_append를 사용하여 기존 리스트에 새로운 파일명들을 추가합니다.
+        
+        Args:
+            sub_category: 서브 카테고리 ID
+            product_id: 제품 ID
+            filenames: 추가할 파일명 리스트
+            
+        Returns:
+            bool: 업데이트 성공 여부
+        """
+        try:
+            if not filenames:
+                logger.info(f"추가할 파일명이 없습니다: {sub_category}-{product_id}")
+                return True
+            
+            # 기존 제품 정보 조회하여 text 필드 존재 여부 확인
+            existing_product = self.get_product_detail(sub_category, product_id)
+            if not existing_product:
+                logger.error(f"제품을 찾을 수 없습니다: {sub_category}-{product_id}")
+                return False
+            
+            # 새로 추가할 파일명들을 DynamoDB List 형식으로 변환
+            new_files_list = [{'S': filename} for filename in filenames]
+            
+            # 기존 text 필드가 있는지 확인
+            has_existing_text = 'text' in existing_product and existing_product['text']
+            
+            if has_existing_text:
+                # 기존 text 필드가 있는 경우: list_append 사용
+                update_expression = "SET #text_field = list_append(if_not_exists(#text_field, :empty_list), :new_files)"
+                expression_attribute_names = {
+                    '#text_field': 'text'
+                }
+                expression_attribute_values = {
+                    ':empty_list': {'L': []},
+                    ':new_files': {'L': new_files_list}
+                }
+                
+                logger.info(f"기존 text 필드에 {len(filenames)}개 파일 추가: {filenames}")
+            else:
+                # text 필드가 없는 경우: 새로 생성
+                update_expression = "SET #text_field = :new_files"
+                expression_attribute_names = {
+                    '#text_field': 'text'
+                }
+                expression_attribute_values = {
+                    ':new_files': {'L': new_files_list}
+                }
+                
+                logger.info(f"새 text 필드 생성하여 {len(filenames)}개 파일 추가: {filenames}")
+            
+            # DynamoDB 업데이트 실행
+            self.dynamodb_client.update_item(
+                TableName=self.table_name,
+                Key={
+                    'sub_category': {'N': str(sub_category)},
+                    'product_id': {'S': product_id}
+                },
+                UpdateExpression=update_expression,
+                ExpressionAttributeNames=expression_attribute_names,
+                ExpressionAttributeValues=expression_attribute_values
+            )
+            
+            logger.info(f"DynamoDB text 필드 업데이트 성공: {sub_category}-{product_id}")
+            logger.debug(f"추가된 파일명: {filenames}")
+            return True
+            
+        except ClientError as e:
+            logger.error(f"DynamoDB text 필드 업데이트 실패 {sub_category}-{product_id}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"DynamoDB text 필드 업데이트 중 예외 발생 {sub_category}-{product_id}: {e}")
+            return False
 
     def batch_get_product_images_from_data(self, main_category: str, sub_category: int, 
                                           product_data_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
