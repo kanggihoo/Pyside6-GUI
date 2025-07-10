@@ -1176,7 +1176,7 @@ class AWSManager:
                 logger.info(f"추가할 파일명이 없습니다: {sub_category}-{product_id}")
                 return True
             
-            # 기존 제품 정보 조회하여 text 필드 존재 여부 확인
+            # # 기존 제품 정보 조회하여 text 필드 존재 여부 확인
             existing_product = self.get_product_detail(sub_category, product_id)
             if not existing_product:
                 logger.error(f"제품을 찾을 수 없습니다: {sub_category}-{product_id}")
@@ -1233,6 +1233,90 @@ class AWSManager:
             return False
         except Exception as e:
             logger.error(f"DynamoDB text 필드 업데이트 중 예외 발생 {sub_category}-{product_id}: {e}")
+            return False
+
+    def remove_files_from_segment_field(self, sub_category: int, product_id: str, 
+                                       filenames: list[str]) -> bool:
+        """
+        DynamoDB의 segment 필드에서 지정된 파일명들을 제거합니다.
+        기존 리스트를 가져와서 필터링 후 다시 SET하는 방식을 사용합니다.
+        
+        Args:
+            sub_category: 서브 카테고리 ID
+            product_id: 제품 ID
+            filenames: 제거할 파일명 리스트
+            
+        Returns:
+            bool: 업데이트 성공 여부
+        """
+        try:
+            if not filenames:
+                logger.info(f"제거할 파일명이 없습니다: {sub_category}-{product_id}")
+                return True
+            
+            # 기존 제품 정보 조회하여 segment 필드 확인
+            existing_product = self.get_product_detail(sub_category, product_id)
+            if not existing_product:
+                logger.error(f"제품을 찾을 수 없습니다: {sub_category}-{product_id}")
+                return False
+            
+            # 기존 segment 필드 확인
+            existing_segment_files = existing_product.get('segment', [])
+            if not existing_segment_files:
+                logger.info(f"segment 필드가 비어있습니다: {sub_category}-{product_id}")
+                return True
+            
+            # 제거할 파일명들을 set으로 변환하여 빠른 조회
+            filenames_to_remove = set(filenames)
+            
+            # 기존 파일 리스트에서 제거할 파일들을 필터링
+            filtered_files = []
+            removed_count = 0
+            
+            for filename in existing_segment_files:
+                if filename not in filenames_to_remove:
+                    filtered_files.append(filename)
+                else:
+                    removed_count += 1
+            
+            if removed_count == 0:
+                logger.info(f"segment 필드에서 제거할 파일이 없습니다: {sub_category}-{product_id}")
+                return True
+            
+            # 필터링된 파일 리스트를 DynamoDB List 형식으로 변환
+            filtered_files_list = [{'S': filename} for filename in filtered_files]
+            
+            # DynamoDB 업데이트 실행
+            update_expression = "SET #segment_field = :filtered_files"
+            expression_attribute_names = {
+                '#segment_field': 'segment'
+            }
+            expression_attribute_values = {
+                ':filtered_files': {'L': filtered_files_list}
+            }
+            
+            self.dynamodb_client.update_item(
+                TableName=self.table_name,
+                Key={
+                    'sub_category': {'N': str(sub_category)},
+                    'product_id': {'S': product_id}
+                },
+                UpdateExpression=update_expression,
+                ExpressionAttributeNames=expression_attribute_names,
+                ExpressionAttributeValues=expression_attribute_values
+            )
+            
+            logger.info(f"DynamoDB segment 필드 업데이트 성공: {sub_category}-{product_id}")
+            logger.info(f"제거된 파일 개수: {removed_count}/{len(filenames)}")
+            logger.debug(f"제거된 파일명: {[f for f in filenames if f in filenames_to_remove and f in existing_segment_files]}")
+            logger.debug(f"남은 파일 개수: {len(filtered_files)}")
+            return True
+            
+        except ClientError as e:
+            logger.error(f"DynamoDB segment 필드 업데이트 실패 {sub_category}-{product_id}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"DynamoDB segment 필드 업데이트 중 예외 발생 {sub_category}-{product_id}: {e}")
             return False
 
     def batch_get_product_images_from_data(self, main_category: str, sub_category: int, 

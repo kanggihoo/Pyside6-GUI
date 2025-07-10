@@ -935,9 +935,9 @@ class RepresentativePanel(QWidget):
                     QMessageBox.warning(self, "오류", "큐레이션 결과 저장에 실패했습니다.")
                     return
                 
-                # 4단계: text 폴더로 이동된 파일들을 DynamoDB text 필드에 추가
+                # 4단계: text 폴더로 이동된 파일들을 DynamoDB text 필드에 추가 및 segment 필드에서 제거
                 if moved_filenames:
-                    logger.info(f"DynamoDB text 필드에 {len(moved_filenames)}개 파일명 추가 시작")
+                    logger.info(f"DynamoDB 필드 업데이트 시작: {len(moved_filenames)}개 파일")
                     
                     # 진행 상황 메시지 표시
                     self.selection_summary.setText(f"🔄 DynamoDB에 이동된 {len(moved_filenames)}개 파일 정보 업데이트 중...")
@@ -956,6 +956,19 @@ class RepresentativePanel(QWidget):
                     else:
                         logger.warning(f"DynamoDB text 필드 업데이트 실패: {moved_filenames}")
                         # text 필드 업데이트 실패는 치명적이지 않으므로 계속 진행
+                    
+                    # segment 필드에서 이동된 파일명들 제거
+                    segment_update_success = self.aws_manager.remove_files_from_segment_field(
+                        sub_category=sub_category,
+                        product_id=product_id,
+                        filenames=moved_filenames
+                    )
+                    
+                    if segment_update_success:
+                        logger.info(f"DynamoDB segment 필드 업데이트 성공: {moved_filenames}")
+                    else:
+                        logger.warning(f"DynamoDB segment 필드 업데이트 실패: {moved_filenames}")
+                        # segment 필드 업데이트 실패는 치명적이지 않으므로 계속 진행
                 
                 # 5단계: 상태 통계 업데이트
                 if previous_status != 'COMPLETED':

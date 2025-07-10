@@ -154,8 +154,7 @@ jobs:
           ## AWS Data Curator ${{ github.ref_name }}
           
           ### Changes
-          - Built with UV package manager
-          - Improved dependency management
+          - segment 필드에서 text 필드로 이미지 이동시 s3 , dyanmodb 수정 (segment 필드에서는 삭제 , text 필드에는 추가)
           - Cross-platform support (Windows & macOS)
           
           ### Downloads

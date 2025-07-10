@@ -896,16 +896,30 @@ class MainImageViewer(QWidget):
             # S3 키 계산 (S3 이미지인 경우에만)
             is_local_segment = selected_image.get('is_local_segment', False)
             if not is_local_segment and self.current_product:
-                main_category = self.current_product.get('main_category')
-                sub_category = self.current_product.get('sub_category')
-                product_id = self.current_product.get('product_id')
                 
-                if all([main_category, sub_category, product_id]):
-                    filename = selected_image.get('filename', '')
-                    source_key = f"{main_category}/{sub_category}/{product_id}/segment/{filename}"
-                    dest_key = f"{main_category}/{sub_category}/{product_id}/text/{filename}"
+                # 제품 정보로 재구성
+               
+                filename = selected_image.get('filename', '')
+                if filename:
+                    main_category = self.current_product.get('main_category', '')
+                    sub_category = self.current_product.get('sub_category', '')
+                    product_id = self.current_product.get('product_id', '')
+                    
+                    if all([main_category, sub_category, product_id]):
+                        source_key = f"{main_category}/{sub_category}/{product_id}/segment/{filename}"
+                            
+                
+                if source_key:
+                    # 소스 키에서 폴더 부분을 text로 변경하여 대상 키 생성
+                    # 예: "TOP/1005/492294/segment/1_16.jpg" -> "TOP/1005/492294/text/1_16.jpg"
+                    key_parts = source_key.split('/')
+                    key_parts[-2] = 'text'  # 폴더 부분을 text로 변경
+                    dest_key = '/'.join(key_parts)
                     
                     self.pending_moves.append((source_key, dest_key))
+                    logger.debug(f"S3 이동 작업 추가: {source_key} -> {dest_key}")
+                else:
+                    logger.warning(f"이미지에서 S3 키를 찾을 수 없습니다: {selected_image.get('filename', 'unknown')}")
             
             # 로컬 상태에서 이미지 이동
             self.move_image_local(selected_image, 'segment', 'text')
