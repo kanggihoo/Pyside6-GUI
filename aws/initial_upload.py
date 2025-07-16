@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 import logging
 from datetime import datetime
-
+import asyncio 
 # 현재 스크립트 경로 기준으로 aws_manager 모듈 임포트
 sys.path.insert(0, str(Path(__file__).parent))
 from aws_manager import create_aws_manager , AWSManager
@@ -271,7 +271,7 @@ class InitialUploader:
         
         return files_to_upload
     
-    def upload_product_files(self, main_category: str , sub_category: int, product_id: str, 
+    async def _uploade_files_concurrent(self , main_category: str , sub_category: int, product_id: str, 
                            files_to_upload: List[Dict[str, Any]]) -> Dict[str, int]:
         """
         제품의 모든 파일을 S3에 업로드합니다.
@@ -302,43 +302,72 @@ class InitialUploader:
                     "success": 10,
                     "failed": 2
                 }
+        
         """
-        upload_stats = {'success': 0, 'failed': 0}
-        
+        upload_tasks = []
         for file_info in files_to_upload:
-            try:
-                # S3 객체 키 생성 (main_category는 기본값 사용)
-                s3_key = self.aws_manager._get_s3_object_key(
-                    main_category, sub_category, product_id, file_info['relative_path']
-                )
-                
-                # 메타데이터 준비
-                metadata = {
-                    'product_id': product_id,
-                    'sub_category': str(sub_category),
-                    'file_type': file_info['file_type'],
-                    'original_path': str(file_info['relative_path'])
-                }
-                
-                # 파일 업로드
-                success = self.aws_manager.upload_file_to_s3(
-                    str(file_info['local_path']),
-                    s3_key,
-                    metadata=metadata
-                )
-                
-                if success:
-                    upload_stats['success'] += 1
-                    logger.debug(f"파일 업로드 성공: {s3_key}")
-                else:
-                    upload_stats['failed'] += 1
-                    logger.error(f"파일 업로드 실패: {s3_key}")
-                
-            except Exception as e:
-                upload_stats['failed'] += 1
-                logger.error(f"파일 업로드 중 오류 {file_info['local_path']}: {e}")
-        
+            upload_tasks.append(asyncio.create_task(self._upload_single_files(main_category, sub_category, product_id, file_info)))
+
+        upload_results = await asyncio.gather(*upload_tasks)
+
+        upload_stats = {"success": 0, "failed": 0}
+        for result in upload_results:
+            if result:
+                upload_stats["success"] += 1
+            else:
+                upload_stats["failed"] += 1
+
         return upload_stats
+
+
+
+    async def _upload_single_files(self, main_category: str , sub_category: int, product_id: str, 
+                           file_info: Dict[str, Any]) -> bool:
+        """
+        단일 파일을 S3에 업로드합니다.
+
+        Args:
+            main_category (str): 메인 카테고리
+            sub_category (int): 서브 카테고리 ID
+            product_id (str): 제품 ID
+            file_info (Dict[str, Any]): 파일 정보
+                example : 
+                    {
+                        "local_path": "~/.../TOP/1005/674732/detail/1.jpg",
+                        "relative_path": "detail/1.jpg",
+                        "file_type": "image",
+                        "size": 1024
+                    }
+
+        Returns:
+            bool: 업로드 성공 여부
+        """
+        try:
+            # S3 객체 키 생성 (main_category는 기본값 사용)
+            s3_key = self.aws_manager._get_s3_object_key(
+                main_category, sub_category, product_id, file_info['relative_path']
+            )
+            
+            # 메타데이터 준비
+            metadata = {
+                'product_id': product_id,
+                'sub_category': str(sub_category),
+                'file_type': file_info['file_type'],
+                'original_path': str(file_info['relative_path'])
+            }
+            
+            # 파일 업로드
+            success = await asyncio.to_thread(
+                self.aws_manager.upload_file_to_s3,
+                str(file_info['local_path']),
+                s3_key,
+                metadata=metadata
+            )
+            return success
+        except Exception as e:
+            logger.error(f"파일 업로드 중 오류 {file_info['local_path']}: {e}")
+            return False
+
     
     def create_dynamodb_item(self, main_category: str, sub_category: int, product_id: str, 
                            image_file_lists: Dict[str, List[str]] = None) -> tuple[bool, bool]:
@@ -391,7 +420,7 @@ class InitialUploader:
     
 
     
-    def upload_single_product(self, product_info: Dict[str, Any]) -> bool:
+    async def upload_single_product_async(self, product_info: Dict[str, Any]) -> bool:
         """
         단일 제품_id 폴더 안의 모든 파일을 s3에 업로드합니다.(이미지 , meta.json 파일) \n
         업로드 한 제품 id에서 대해서는 DynamoDB에 아이템을 생성(기본 제품_id , sub_category , main_category) \n
@@ -427,8 +456,9 @@ class InitialUploader:
             # 2. 이미지 파일들을 폴더별로 분류 (DynamoDB 저장용)
             image_file_lists = self.classify_image_files_by_folder(files_to_upload)
             
-            # 3. DynamoDB에 아이템 생성 (파일 리스트 포함)
-            db_success, is_new_product = self.aws_manager.create_product_item(
+            # 3. DynamoDB에 아이템 생성 (파일 리스트 포함) => 비동기 
+            db_success, is_new_product = await asyncio.to_thread(
+                self.aws_manager.create_product_item,
                 main_category, sub_category, product_id, image_file_lists, recommendation_order
             )
 
@@ -445,7 +475,7 @@ class InitialUploader:
                 return False
             
             # 5. 새 제품인 경우 S3에 파일 업로드
-            upload_stats = self.upload_product_files(main_category, sub_category, product_id, files_to_upload)
+            upload_stats = await self._uploade_files_concurrent(main_category, sub_category, product_id, files_to_upload)
             
             # 6. 결과 통계 업데이트
             self.stats['total_files'] += len(files_to_upload)
@@ -522,7 +552,7 @@ class InitialUploader:
         # 빈 폴더도 포함하여 반환
         return image_file_lists
     
-    def upload_all_products(self, max_products: Optional[int] = None) -> Dict[str, Any]:
+    async def upload_all_products_async(self , max_workers: int = 10) -> Dict[str, Any]:
         """
         모든 제품을 업로드합니다.
         
@@ -534,25 +564,80 @@ class InitialUploader:
         """
         logger.info("전체 제품 업로드 시작")
         
+        #TODO: 메모리 사용 비효율 
         # 제품 목록 발견 (카테고리 통계도 수집됨)
         products = self.discover_products()
+        total_count = len(products)
+        completed_count = 0
+
+        # 큐에 세마 포어 생성 
+        queue = asyncio.Queue()
+        semaphore = asyncio.Semaphore(max_workers)
+
+        # producer 생성
+        async def producer():
+            '''제품을 큐에 추가'''
+            for product in products:
+                await queue.put(product)
+
+            # 종료 신호 전송
+            queue.put(None)
         
-        if max_products:
-            products = products[:max_products]
-            logger.info(f"최대 {max_products}개 제품으로 제한")
+        async def worker():
+            '''큐에서 제품을 꺼내서 업로드'''
+            nonlocal completed_count
+            while True:
+                product = await queue.get()
+                if product is None:
+                    break
+                
+                async with semaphore:
+                    try:
+                        await self.upload_single_product_async(product)
+                    except Exception as e:
+                        logger.error(f"제품 업로드 중 예상치 못한 오류 {product['product_id']}: {e}")
+                        
+                        
+                    if completed_count % 10 == 0:
+                        logger.info(f"진행률: {completed_count}/{total_count} ({completed_count/total_count*100:.1f}%)")
+                    
+                    completed_count += 1
+            # Producer와 Worker들을 병렬 실행
+        tasks = [
+            asyncio.create_task(producer()),
+            *[asyncio.create_task(worker()) for _ in range(max_workers)]
+        ]
         
-        # 각 제품 업로드
-        for i, product_info in enumerate(products, 1):
-            logger.info(f"진행률: {i}/{len(products)} ({i/len(products)*100:.1f}%)")
+        await asyncio.gather(*tasks)
+        
+        # 카테고리 상태 통계 업데이트
+        await asyncio.to_thread(self._update_all_category_stats)
+        
+        # 최종 통계
+        self.stats['end_time'] = datetime.now()
+        duration = self.stats['end_time'] - self.stats['start_time']
+        
+        logger.info("=" * 50)
+        logger.info("전체 제품 업로드 완료!")
+        logger.info(f"소요 시간: {duration}")
+        logger.info(f"성공: {self.stats['uploaded_products']}, 실패: {self.stats['failed_products']}")
+        logger.info("=" * 50)
+        
+        return self.stats
             
-            success = self.upload_single_product(product_info)
+
+        # # 각 제품 업로드
+        # for i, product_info in enumerate(products, 1):
+        #     logger.info(f"진행률: {i}/{len(products)} ({i/len(products)*100:.1f}%)")
             
-            if not success:
-                logger.warning(f"제품 업로드 실패: {product_info['product_id']}")
+        #     success = self.upload_single_product_async(product_info)
             
-            # 진행률 로그 (매 10개마다)
-            if i % 10 == 0:
-                logger.info(f"중간 통계 - 성공: {self.stats['uploaded_products']}, 실패: {self.stats['failed_products']}")
+        #     if not success:
+        #         logger.warning(f"제품 업로드 실패: {product_info['product_id']}")
+            
+        #     # 진행률 로그 (매 10개마다)
+        #     if i % 10 == 0:
+        #         logger.info(f"중간 통계 - 성공: {self.stats['uploaded_products']}, 실패: {self.stats['failed_products']}")
         
         # 모든 제품 업로드 완료 후 카테고리 상태 통계 한 번에 업데이트
         self._update_all_category_stats()
@@ -593,12 +678,12 @@ class InitialUploader:
         
         logger.info("=" * 60)
         
-        return self.stats
+        return self.stats   # 업로드 결과 통계 반환
     
 
 
 
-def main():
+async def main():     
     """메인 함수"""
     # parser = argparse.ArgumentParser(description='초기 데이터 업로드 스크립트')
     # parser.add_argument('--data-path', default='1005', help='데이터 디렉토리 경로 (기본값: 1005)')
@@ -622,7 +707,9 @@ def main():
     try:
         # 데이터 경로 확인
         HOME_DIR = os.getcwd()
-        data_path = Path(__file__).parent.parent / args.data_path
+        
+        # data_path = Path(__file__).parent.parent / args.data_path
+        data_path = Path("/Users/kkh/Desktop/musinsa-crawling") / args.data_path
         if not data_path.exists():
             logger.error(f"데이터 경로가 존재하지 않습니다: {data_path}")
             return 1
@@ -643,17 +730,9 @@ def main():
         
         logger.info("AWS 연결 성공!")
         
-        if args.dry_run:
-            logger.info("DRY RUN 모드: 실제 업로드는 하지 않습니다.")
-            # 간단한 검증만 수행
-            uploader = InitialUploader(str(data_path), aws_manager)
-            products = uploader.discover_products()
-            logger.info(f"발견된 제품 수: {len(products)}")
-            return 0
-        
         # 업로더 생성 및 실행
         uploader = InitialUploader(str(data_path), aws_manager)
-        results = uploader.upload_all_products(max_products=args.max_products)
+        results = await uploader.upload_all_products_async()
         
         # 결과에 따른 종료 코드
         if results['failed_products'] == 0:
@@ -672,4 +751,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
