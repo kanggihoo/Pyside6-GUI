@@ -13,7 +13,7 @@ from botocore.exceptions import ClientError
 from pathlib import Path
 import mimetypes
 import logging
-
+import botocore.config
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,14 +30,18 @@ class AWSManager:
             region_name: AWS 리전명
             profile_name: AWS 프로필명 (None이면 기본 프로필)
         """
+        config = botocore.config.Config(
+            max_pool_connections=50,  # 기본 10 → 50으로 증가
+            retries={'max_attempts': 3}
+        )
         self.region_name = region_name
         self.profile_name = profile_name
     
         
         # 클라이언트 초기화
-        self.s3_client = boto3.client('s3', region_name=region_name)
-        self.dynamodb_client = boto3.client('dynamodb', region_name=region_name)
-        self.sts_client = boto3.client('sts', region_name=region_name)
+        self.s3_client = boto3.client('s3', region_name=region_name, config=config)
+        self.dynamodb_client = boto3.client('dynamodb', region_name=region_name, config=config)
+        self.sts_client = boto3.client('sts', region_name=region_name, config=config)
         
         # 설정 로드
         self.config = self._load_config()
