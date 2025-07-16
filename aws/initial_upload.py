@@ -613,16 +613,15 @@ def main():
     
     @dataclass
     class args:
-        data_path: str = 'TOP'
+        data_path: str = 'BOTTOM'
         region: str = 'ap-northeast-2'
         profile: str = None
         max_products: int|None = None
-        dry_run: bool = False
-    
     try:
         # 데이터 경로 확인
         HOME_DIR = os.getcwd()
         data_path = Path(__file__).parent.parent / args.data_path
+        data_path = Path(r"C:\Users\11kkh\Desktop\crawling") / args.data_path
         if not data_path.exists():
             logger.error(f"데이터 경로가 존재하지 않습니다: {data_path}")
             return 1
@@ -642,14 +641,7 @@ def main():
             return 1
         
         logger.info("AWS 연결 성공!")
-        
-        if args.dry_run:
-            logger.info("DRY RUN 모드: 실제 업로드는 하지 않습니다.")
-            # 간단한 검증만 수행
-            uploader = InitialUploader(str(data_path), aws_manager)
-            products = uploader.discover_products()
-            logger.info(f"발견된 제품 수: {len(products)}")
-            return 0
+    
         
         # 업로더 생성 및 실행
         uploader = InitialUploader(str(data_path), aws_manager)
