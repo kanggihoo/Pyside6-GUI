@@ -698,7 +698,7 @@ async def main():
     
     @dataclass
     class args:
-        data_path: str = 'BOTTOM'
+        data_path: str = 'TOP'
         region: str = 'ap-northeast-2'
         profile: str = None
         max_products: int|None = None
@@ -707,7 +707,7 @@ async def main():
         HOME_DIR = os.getcwd()
         
         # data_path = Path(__file__).parent.parent / args.data_path
-        data_path = Path("/Users/kkh/Desktop/musinsa-crawling") / args.data_path
+        data_path = Path(r"C:\Users\11kkh\Desktop\crawling") / args.data_path
         if not data_path.exists():
             logger.error(f"데이터 경로가 존재하지 않습니다: {data_path}")
             return 1
