@@ -552,7 +552,7 @@ class InitialUploader:
         # 빈 폴더도 포함하여 반환
         return image_file_lists
     
-    async def upload_all_products_async(self , max_workers: int = 10) -> Dict[str, Any]:
+    async def upload_all_products_async(self , max_workers: int = 5) -> Dict[str, Any]:
         """
         모든 제품을 업로드합니다.
         
