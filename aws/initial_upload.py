@@ -581,16 +581,18 @@ class InitialUploader:
                 await queue.put(product)
 
             # 종료 신호 전송
-            queue.put(None)
+            await queue.put("END")
+            logger.info("모든 제품 큐 추가 완료")
         
         async def worker():
             '''큐에서 제품을 꺼내서 업로드'''
             nonlocal completed_count
             while True:
                 product = await queue.get()
-                if product is None:
+                if product == "END":
+                    logger.info("큐에서 제품 꺼내기 종료")
                     break
-                
+            
                 async with semaphore:
                     try:
                         await self.upload_single_product_async(product)
@@ -706,8 +708,8 @@ async def main():
         # 데이터 경로 확인
         HOME_DIR = os.getcwd()
         
-        # data_path = Path(__file__).parent.parent / args.data_path
-        data_path = Path(r"C:\Users\11kkh\Desktop\crawling") / args.data_path
+        data_path = Path(__file__).parent.parent / args.data_path
+        # data_path = Path(r"C:\Users\11kkh\Desktop\crawling") / args.data_path
         if not data_path.exists():
             logger.error(f"데이터 경로가 존재하지 않습니다: {data_path}")
             return 1
