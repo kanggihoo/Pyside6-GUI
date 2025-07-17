@@ -182,6 +182,7 @@ class InitialUploader:
             # 제품 수 저장
             category_stats["product_counts"][main_category][str(sub_category_id)] = product_count
             category_stats["total_products"] += product_count
+            logger.info(f"서브 카테고리 {sub_category_id}에 {product_count}개 제품 추가됨")
         
         # 서브 카테고리 정렬
         category_stats["sub_categories"][main_category].sort()
@@ -568,6 +569,7 @@ class InitialUploader:
         # 제품 목록 발견 (카테고리 통계도 수집됨)
         products = self.discover_products()
         total_count = len(products)
+        logger.info(f"총 제품 수: {total_count}")
         completed_count = 0
 
         # 큐에 세마 포어 생성 
@@ -581,8 +583,11 @@ class InitialUploader:
                 await queue.put(product)
 
             # 종료 신호 전송
-            await queue.put("END")
-            logger.info("모든 제품 큐 추가 완료")
+            for i in range(max_workers):
+                await queue.put("END")
+                logger.debug(f"[Producer] Worker {i}에 종료 신호 전송")
+        
+            logger.info("[Producer] 모든 종료 신호 전송 완료")
         
         async def worker():
             '''큐에서 제품을 꺼내서 업로드'''
@@ -708,8 +713,8 @@ async def main():
         # 데이터 경로 확인
         HOME_DIR = os.getcwd()
         
-        data_path = Path(__file__).parent.parent / args.data_path
-        # data_path = Path(r"C:\Users\11kkh\Desktop\crawling") / args.data_path
+        # data_path = Path(__file__).parent.parent / args.data_path
+        data_path = Path(r"C:\Users\11kkh\Desktop\crawling") / args.data_path
         if not data_path.exists():
             logger.error(f"데이터 경로가 존재하지 않습니다: {data_path}")
             return 1
