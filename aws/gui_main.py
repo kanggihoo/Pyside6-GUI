@@ -362,7 +362,7 @@ class MainWindow(QMainWindow):
                 # 처음 실행 시 카테고리를 선택하지 않으면 앱 종료
                 QMessageBox.information(self, "카테고리 선택", "카테고리를 선택해야 앱을 사용할 수 있습니다.")
                 self.close()
-    
+    #CHECK : 중요 함수(카테고리 선택 완료시 상품 정보 초기화 => ProductListWidget 클래스와 연결 ) 
     def on_category_selected(self, main_category: str, sub_category: int):
         """카테고리 선택 완료 처리"""
         self.selected_main_category = main_category

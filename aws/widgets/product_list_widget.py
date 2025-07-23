@@ -36,27 +36,14 @@ class ProductLoadThread(QThread):
     def run(self):
         """스레드 실행"""
         try:
-            if self.status_filter and self.status_filter != "ALL":
-                # 상태별 필터링
-                products, last_key = self.aws_manager.get_product_by_status(
+           
+            products, last_key = self.aws_manager.get_product_by_status(
                     status=self.status_filter,
                     limit=self.limit,
-                    exclusive_start_key=self.exclusive_start_key
-                )
-            elif self.sub_category:
-                # 서브 카테고리별 조회
-                products, last_key = self.aws_manager.get_product_list(
-                    sub_category=self.sub_category,
-                    limit=self.limit,
-                    exclusive_start_key=self.exclusive_start_key
-                )
-            else:
-                # 전체 조회 (기본값: 1005 카테고리)
-                products, last_key = self.aws_manager.get_product_list(
-                    sub_category=1005,
-                    limit=self.limit,
-                    exclusive_start_key=self.exclusive_start_key
-                )
+                    exclusive_start_key=self.exclusive_start_key,
+                    sub_category=self.sub_category
+            )
+           
             
             # dynamoDB에서 조회한 데이터를 Signal로 방출 => self.on_products_loaded() 함수에게 전달 
             self.products_loaded.emit(products, last_key or {})

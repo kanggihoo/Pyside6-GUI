@@ -382,6 +382,8 @@ class AWSManager:
             
             # Format recommendation_order as 7-digit string and combine with product_id
             formatted_order = f"{recommendation_order:07d}#{product_id}"
+            sub_category_curation_status = f"{sub_category}#PENDING"
+
             
             # DynamoDB client용 아이템 구성 (타입 명시 필요)
             item = {
@@ -392,7 +394,8 @@ class AWSManager:
                 'recommendation_order': {'S': formatted_order}, # GSI 인덱스의 정렬 키 (문자열로 변경)
                 'caption_status': {'S': 'PENDING'}, # GSI 인덱스의 파티션 키 
                 'caption_updated_at': {'S': current_time}, # GSI 인덱스의 정렬 키 
-                'created_at': {'S': current_time}
+                'created_at': {'S': current_time},
+                'sub_category_curation_status': {'S': sub_category_curation_status}
             }
             
             # 파일 리스트 추가 (빈 리스트 포함)
@@ -460,30 +463,38 @@ class AWSManager:
             logger.error(f"DynamoDB 상품 목록 조회 실패 카테고리 {sub_category}: {e}")
             return [], None
     
-    def get_product_by_status(self, status: str, limit: int = 50,
-                             exclusive_start_key: dict[str, Any]|None = None) -> tuple[list[dict[str, Any]], dict[str, Any]|None]:
+    def get_product_by_status(self, status: str ="PENDING", limit: int = 50,
+                             exclusive_start_key: dict[str, Any]|None = None, 
+                             sub_category: int= 1005) -> tuple[list[dict[str, Any]], dict[str, Any]|None]:
         """
-        특정 상태의 상품 목록을 GSI를 통해 조회합니다.
+        특정 상태와 서브 카테고리의 상품 목록을 GSI를 통해 조회합니다.
         
         Args:
-            status: 큐레이션 상태 ('PENDING', 'COMPLETED')
+            status: 큐레이션 상태 ('PENDING', 'COMPLETED', 'PASS', 'IN_PROGRESS')
             limit: 한 번에 가져올 아이템 수
             exclusive_start_key: 페이지네이션을 위한 시작 키
+            sub_category: 서브 카테고리 ID (None이면 모든 서브 카테고리)
             
         Returns:
             Tuple[List[Dict], Optional[Dict]]: (아이템 리스트, 다음 페이지 키)
         """
+
         try:
             query_params = {
                 'TableName': self.table_name,
-                'IndexName': 'CurationStatus-RecommendationOrder-GSI',
-                'KeyConditionExpression': 'curation_status = :status',
+                'IndexName': 'CurationStatus-SubCategory-GSI',
+                'KeyConditionExpression': 'sub_category_curation_status = :sub_category_curation_status',
                 'ExpressionAttributeValues': {
-                    ':status': {'S': status}
+                    ':sub_category_curation_status': {'S': f"{sub_category}#{status}"}
                 },
                 'Limit': limit,
                 'ScanIndexForward': True # 무신사 추천순서(order)깂이 낮은게 먼저 -> 오름차순 
             }
+            
+            # # 서브 카테고리 필터 추가
+            # if sub_category is not None:
+            #     query_params['FilterExpression'] = 'sub_category = :sub_category'
+            #     query_params['ExpressionAttributeValues'][':sub_category'] = {'N': str(sub_category)}
             
             if exclusive_start_key:
                 query_params['ExclusiveStartKey'] = exclusive_start_key
@@ -498,11 +509,12 @@ class AWSManager:
                 
             next_key = response.get('LastEvaluatedKey')
             
-            logger.info(f"DynamoDB 상태별 상품 조회 완료: 상태 {status}, 개수: {len(items)}")
+            category_info = f", 서브카테고리: {sub_category}" if sub_category is not None else ""
+            logger.info(f"DynamoDB 상태별 상품 조회 완료: 상태 {status}{category_info}, 개수: {len(items)}")
             return items, next_key
             
         except ClientError as e:
-            logger.error(f"DynamoDB 상태별 상품 조회 실패 상태 {status}: {e}")
+            logger.error(f"DynamoDB 상태별 상품 조회 실패 상태 {status}, 서브카테고리 {sub_category}: {e}")
             return [], None
     
     def update_curation_result(self, sub_category: int, product_id: str, 
@@ -533,9 +545,10 @@ class AWSManager:
             current_time = self._get_current_timestamp()
             
             # SET 표현식 (새로운 값 설정)
-            set_expression_parts = ["curation_status = :status"]
+            set_expression_parts = ["curation_status = :status" , "sub_category_curation_status = :sub_category_curation_status"]
             expression_values = {
-                ':status': {'S': 'COMPLETED'}
+                ':status': {'S': 'COMPLETED'},
+                ':sub_category_curation_status': {'S': f"{sub_category}#COMPLETED"}
             }
             
             # 큐레이션 결과 추가 - DynamoDB Map 타입으로 저장
@@ -825,6 +838,121 @@ class AWSManager:
             logger.error(f"DynamoDB 제품 상세 조회 실패 {sub_category}-{product_id}: {e}")
             return None
     
+    def delete_all_products_in_category(self, sub_category: int) -> dict[str, Any]:
+        """
+        특정 서브 카테고리의 모든 제품 데이터를 삭제합니다.
+        DynamoDB의 배치 삭제를 사용하여 효율적으로 처리합니다.
+        
+        Args:
+            sub_category: 삭제할 서브 카테고리 ID
+            
+        Returns:
+            Dict[str, Any]: 삭제 결과 {'success': bool, 'deleted_count': int, 'failed_items': list}
+        """
+        try:
+            deleted_count = 0
+            failed_items = []
+
+            logger.info(f"카테고리 {sub_category} 전체 데이터 삭제 시작")
+        
+            # paginator 생성
+            paginator = self.dynamodb_client.get_paginator('query')
+            
+            # paginate 실행 (25개씩 페이지 크기 설정)
+            page_iterator = paginator.paginate(
+                TableName=self.table_name,
+                KeyConditionExpression='sub_category = :sub_category',
+                ExpressionAttributeValues={
+                    ':sub_category': {'N': str(sub_category)}
+                },
+                ProjectionExpression='sub_category, product_id',
+                PaginationConfig={'PageSize': 25}
+            )
+
+            for page in page_iterator:
+                items = page.get('Items', [])
+                if not items:
+                    continue
+
+                delete_requests = []
+                for item in items:
+                    delete_requests.append({
+                        'DeleteRequest': {
+                            'Key': {
+                                'sub_category': item['sub_category'],
+                                'product_id': item['product_id']
+                            }
+                        }
+                    })
+                try:
+                    batch_response = self.dynamodb_client.batch_write_item(
+                        RequestItems={
+                            self.table_name: delete_requests
+                        }
+                    )
+                    unprocessed_items = batch_response.get('UnprocessedItems', {})
+
+
+                    # 처리되지 못한 아이템들 재시도
+                    # unprocessed_items = batch_response.get('UnprocessedItems', {})
+                    # retry_count = 0
+                    # max_retries = 3
+                    
+                    # while unprocessed_items and retry_count < max_retries:
+                    #     retry_count += 1
+                    #     logger.warning(f"배치 삭제 재시도 {retry_count}/{max_retries}: {len(unprocessed_items.get(self.table_name, []))}개 아이템")
+                        
+                    #     # 지수 백오프 적용
+                    #     import time
+                    #     time.sleep(2 ** retry_count * 0.1)
+                        
+                    #     retry_response = self.dynamodb_client.batch_write_item(
+                    #         RequestItems=unprocessed_items
+                    #     )
+                    #     unprocessed_items = retry_response.get('UnprocessedItems', {})
+                    # 최종적으로 처리되지 못한 아이템들 기록
+                    if unprocessed_items:
+                        failed_batch = unprocessed_items.get(self.table_name, [])
+                        failed_items.extend(failed_batch)
+                        logger.error(f"배치 삭제 최종 실패: {len(failed_batch)}개 아이템")
+                    
+                    # 성공한 아이템 수 계산
+                    successful_deletes = len(delete_requests) - len(unprocessed_items.get(self.table_name, []))
+                    deleted_count += successful_deletes
+                        
+                except ClientError as e:
+                    logger.error(f"배치 삭제 실패: {e}")
+                    failed_items.extend(delete_requests)
+            
+            logger.info(f"카테고리 {sub_category} 삭제 진행 중: {deleted_count}개 완료")
+            success = len(failed_items) == 0
+            logger.info(f"카테고리 {sub_category} 삭제 완료: 성공 {deleted_count}개, 실패 {len(failed_items)}개")
+            
+            return {
+                'success': success,
+                'deleted_count': deleted_count,
+                'failed_items': failed_items,
+                'failed_count': len(failed_items)
+            }
+        
+        except ClientError as e:
+            logger.error(f"카테고리 {sub_category} 삭제 중 DynamoDB 오류: {e}")
+            return {
+                'success': False,
+                'deleted_count': 0,
+                'failed_items': [],
+                'failed_count': 0,
+                'error': str(e)
+            }
+        except Exception as e:
+            logger.error(f"카테고리 {sub_category} 삭제 중 예상치 못한 오류: {e}")
+            return {
+                'success': False,
+                'deleted_count': 0,
+                'failed_items': [],
+                'failed_count': 0,
+                'error': str(e)
+            }
     # =============================================================================
     # 카테고리별 상태 통계 관리 함수들
     # =============================================================================

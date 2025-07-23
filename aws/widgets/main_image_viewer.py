@@ -821,6 +821,8 @@ class MainImageViewer(QWidget):
     def activate_mode_button(self, mode_key: str):
         """모드 버튼 활성화"""
         try:
+            logger.debug(f"activate_mode_button 호출됨: {mode_key}")
+            
             # 먼저 포커스 확실히 설정
             self.ensure_keyboard_focus()
             
@@ -831,13 +833,16 @@ class MainImageViewer(QWidget):
             elif mode_key == 'undo_move':
                 self.undo_last_move()
             elif mode_key in self.mode_buttons:
-                button = self.mode_buttons[mode_key]
-                if button and hasattr(button, 'click'):
-                    button.click()
-                    if hasattr(button, 'isCheckable') and button.isCheckable():
-                        button.setChecked(True)
+                # 직접 모드 설정 (버튼 클릭 대신)
+                self.set_selection_mode(mode_key)
+                logger.debug(f"모드 {mode_key} 직접 설정 완료")
+            else:
+                logger.warning(f"알 수 없는 모드 키: {mode_key}")
+                
         except Exception as e:
             logger.error(f"모드 버튼 활성화 오류: {str(e)}")
+            # 오류 발생 시 버튼 복구 시도
+            QTimer.singleShot(100, self.force_button_repair)
     
     def update_button_states(self, folder_name: str, image_data: dict):
         """선택된 이미지에 따라 버튼 상태 업데이트"""
@@ -1246,7 +1251,7 @@ class MainImageViewer(QWidget):
     def restore_default_mode_message(self):
         """기본 모드 메시지 복원"""
         try:
-            self.current_mode_label.setText("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어, Ctrl+Z:되돌리기, M:이동, Tab:탭이동)")
+            self.current_mode_label.setText("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어, Ctrl+Z:되돌리기, Ctrl+R:복구, M:이동, Tab:탭이동)")
             self.current_mode_label.setStyleSheet("color: #6c757d; font-size: 11px; background-color: transparent;")
         except Exception as e:
             logger.error(f"기본 메시지 복원 오류: {str(e)}")
@@ -1500,7 +1505,7 @@ class MainImageViewer(QWidget):
         mode_layout.setSpacing(4)
         
         # 안내 레이블
-        info_label = QLabel("대표 이미지 선택 및 이미지 관리 (단축키: 1-4, V, ESC, Ctrl+Z):")
+        info_label = QLabel("대표 이미지 선택 및 이미지 관리 (단축키: 1-4, V, ESC, Ctrl+Z, Ctrl+R):")
         info_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #495057; background-color: transparent;")
         mode_layout.addWidget(info_label)
         
@@ -1542,7 +1547,12 @@ class MainImageViewer(QWidget):
                 }}
             """)
             btn.setCheckable(True)
-            btn.clicked.connect(lambda checked, mode=mode_key: self.set_selection_mode(mode))
+            
+            # Lambda 함수 클로저 문제 해결: 함수 팩토리 패턴 사용
+            def create_mode_click_handler(mode):
+                return lambda checked: self.set_selection_mode(mode)
+            
+            btn.clicked.connect(create_mode_click_handler(mode_key))
             
             self.mode_buttons[mode_key] = btn
             buttons_layout.addWidget(btn)
@@ -1571,7 +1581,7 @@ class MainImageViewer(QWidget):
         mode_layout.addLayout(buttons_layout)
         
         # 현재 모드 표시 레이블
-        self.current_mode_label = QLabel("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어, Ctrl+Z:되돌리기, M:이동, Tab:탭이동)")
+        self.current_mode_label = QLabel("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어, Ctrl+Z:되돌리기, Ctrl+R:복구, M:이동, Tab:탭이동)")
         self.current_mode_label.setStyleSheet("color: #6c757d; font-size: 11px; background-color: transparent;")
         mode_layout.addWidget(self.current_mode_label)
         
@@ -1579,32 +1589,67 @@ class MainImageViewer(QWidget):
     
     def set_selection_mode(self, mode):
         """선택 모드 설정"""
-        # 이전 버튼 선택 해제
-        for btn in self.mode_buttons.values():
-            btn.setChecked(False)
+        logger.info(f"set_selection_mode 호출됨: {mode}")
+        logger.info(f"현재 mode_buttons: {list(self.mode_buttons.keys())}")
         
-        # 새로운 모드 설정
-        self.selection_mode = mode
-        self.mode_buttons[mode].setChecked(True)
-        
-        # 모드별 안내 메시지
-        mode_messages = {
-            'model_wearing': "모델 착용 이미지를 선택하세요",
-            'front_cutout': "정면 누끼 이미지를 선택하세요", 
-            'back_cutout': "후면 누끼 이미지를 선택하세요",
-            'color_variant': "제품 색상 이미지를 선택하세요"
-        }
-        
-        self.current_mode_label.setText(mode_messages.get(mode, "이미지를 선택하세요"))
-        self.current_mode_label.setStyleSheet("color: #28a745; font-size: 11px; background-color: transparent; font-weight: bold;")
+        try:
+            # 포커스 강제 설정
+            self.ensure_keyboard_focus()
+            
+            # 이전 버튼 선택 해제
+            for btn in self.mode_buttons.values():
+                if btn and btn.isCheckable():
+                    btn.setChecked(False)
+            
+            # 새로운 모드 설정
+            self.selection_mode = mode
+            if mode in self.mode_buttons and self.mode_buttons[mode]:
+                button = self.mode_buttons[mode]
+                if button.isCheckable():
+                    button.setChecked(True)
+                    logger.info(f"버튼 {mode} 체크됨")
+                else:
+                    logger.warning(f"버튼 {mode}가 체크 가능하지 않음")
+            else:
+                logger.error(f"버튼 {mode}를 찾을 수 없음")
+            
+            # 모드별 안내 메시지
+            mode_messages = {
+                'model_wearing': "모델 착용 이미지를 선택하세요",
+                'front_cutout': "정면 누끼 이미지를 선택하세요", 
+                'back_cutout': "후면 누끼 이미지를 선택하세요",
+                'color_variant': "제품 색상 이미지를 선택하세요"
+            }
+            
+            self.current_mode_label.setText(mode_messages.get(mode, "이미지를 선택하세요"))
+            self.current_mode_label.setStyleSheet("color: #28a745; font-size: 11px; background-color: transparent; font-weight: bold;")
+            
+            logger.debug(f"선택 모드 설정 완료: {mode}")
+            
+        except Exception as e:
+            logger.error(f"선택 모드 설정 오류: {str(e)}")
+            # 오류 발생 시 버튼 복구 시도
+            QTimer.singleShot(100, self.force_button_repair)
     
     def clear_selection_mode(self):
         """선택 모드 초기화"""
-        self.selection_mode = None
-        for btn in self.mode_buttons.values():
-            btn.setChecked(False)
-        self.current_mode_label.setText("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어, Ctrl+Z:되돌리기, M:이동, Tab:탭이동)")
-        self.current_mode_label.setStyleSheet("color: #6c757d; font-size: 11px; background-color: transparent;")
+        try:
+            logger.debug("선택 모드 초기화 시작")
+            self.selection_mode = None
+            
+            # 버튼 상태 안전하게 초기화
+            for btn in self.mode_buttons.values():
+                if btn and btn.isCheckable():
+                    btn.setChecked(False)
+            
+            # 기본 메시지 복원
+            self.current_mode_label.setText("모드를 선택하고 이미지를 클릭하세요 (1:모델, 2:정면, 3:후면, 4:색상, ESC:취소, V:뷰어, Ctrl+Z:되돌리기, Ctrl+R:복구, M:이동, Tab:탭이동)")
+            self.current_mode_label.setStyleSheet("color: #6c757d; font-size: 11px; background-color: transparent;")
+            
+            logger.debug("선택 모드 초기화 완료")
+            
+        except Exception as e:
+            logger.error(f"선택 모드 초기화 오류: {str(e)}")
     
     def setup_controls(self, parent_layout):
         """하단 컨트롤 설정 - 이미지 관리 버튼들"""
@@ -2394,6 +2439,9 @@ class MainImageViewer(QWidget):
             self.move_to_text_btn.setEnabled(False)
             self.undo_btn.setEnabled(False)
             
+            # 버튼 상태 검증 및 복구
+            QTimer.singleShot(100, self.verify_and_repair_buttons)
+            
             logger.debug("MainImageViewer 초기화 완료")
             
         except Exception as e:
@@ -2448,6 +2496,13 @@ class MainImageViewer(QWidget):
                     event.accept()
                     return
             
+            # Ctrl+R: 버튼 강제 복구
+            elif event.key() == Qt.Key_R and event.modifiers() == Qt.ControlModifier:
+                logger.info("Ctrl+R 눌림 - 버튼 강제 복구")
+                self.force_button_repair()
+                event.accept()
+                return
+            
             # M/m: Text 폴더로 이동 (segment 폴더에서만)
             elif event.key() == Qt.Key_M:
                 if self.move_to_text_btn.isEnabled():
@@ -2460,26 +2515,31 @@ class MainImageViewer(QWidget):
                     event.accept()
                     return
             
-            # 숫자키 1-4: 대표 이미지 모드 선택
+            # 숫자키 1-4: 대표 이미지 모드 선택 (직접 호출)
             elif event.key() == Qt.Key_1:
-                self.activate_mode_button('model_wearing')
+                logger.debug("키보드 1번 눌림 - 모델 선택")
+                self.set_selection_mode('model_wearing')
                 event.accept()
                 return
             elif event.key() == Qt.Key_2:
-                self.activate_mode_button('front_cutout')
+                logger.debug("키보드 2번 눌림 - 정면 선택")
+                self.set_selection_mode('front_cutout')
                 event.accept()
                 return
             elif event.key() == Qt.Key_3:
-                self.activate_mode_button('back_cutout')
+                logger.debug("키보드 3번 눌림 - 후면 선택")
+                self.set_selection_mode('back_cutout')
                 event.accept()
                 return
             elif event.key() == Qt.Key_4:
-                self.activate_mode_button('color_variant')
+                logger.debug("키보드 4번 눌림 - 색상 선택")
+                self.set_selection_mode('color_variant')
                 event.accept()
                 return
             
             # ESC: 선택 모드 취소
             elif event.key() == Qt.Key_Escape:
+                logger.debug("키보드 ESC 눌림 - 선택 취소")
                 self.clear_selection_mode()
                 event.accept()
                 return
@@ -2492,8 +2552,8 @@ class MainImageViewer(QWidget):
             
         except Exception as e:
             logger.error(f"키보드 이벤트 처리 오류: {str(e)}")
-            # 오류 발생 시에도 포커스 복원 시도
-            QTimer.singleShot(100, self.ensure_keyboard_focus)
+            # 오류 발생 시 버튼 복구 시도
+            QTimer.singleShot(100, self.force_button_repair)
         
         # 처리되지 않은 키는 부모 클래스로 전달
         super().keyPressEvent(event)
@@ -2506,3 +2566,61 @@ class MainImageViewer(QWidget):
         """대기 중인 S3 이동 목록 초기화"""
         self.pending_moves.clear()
         self.move_history.clear()
+
+    def verify_and_repair_buttons(self):
+        """버튼 상태 검증 및 복구"""
+        try:
+            logger.info("버튼 상태 검증 시작")
+            
+            # 모드 버튼들 검증
+            for mode_key, button in self.mode_buttons.items():
+                if not button:
+                    logger.warning(f"버튼이 None입니다: {mode_key}")
+                    continue
+                    
+                # 시그널 연결 상태 확인
+                receivers = button.receivers(button.clicked)
+                logger.info(f"버튼 {mode_key}의 시그널 수신자 수: {receivers}")
+                
+                if receivers == 0:
+                    logger.warning(f"버튼 {mode_key}의 시그널 연결이 해제됨 - 재연결")
+                    # 시그널 재연결
+                    button.clicked.disconnect()  # 기존 연결 모두 해제
+                    
+                    # Lambda 함수 클로저 문제 해결: 함수 팩토리 패턴 사용
+                    def create_mode_click_handler(mode):
+                        return lambda checked: self.set_selection_mode(mode)
+                    
+                    button.clicked.connect(create_mode_click_handler(mode_key))
+            
+            logger.info("버튼 상태 검증 완료")
+            
+        except Exception as e:
+            logger.error(f"버튼 상태 검증 오류: {str(e)}")
+
+    def force_button_repair(self):
+        """강제로 버튼 복구"""
+        try:
+            logger.info("강제 버튼 복구 시작")
+            
+            # 모든 시그널 연결 해제
+            for button in self.mode_buttons.values():
+                if button:
+                    try:
+                        button.clicked.disconnect()
+                    except:
+                        pass  # 이미 연결이 해제된 경우 무시
+            
+            # 시그널 재연결
+            for mode_key, button in self.mode_buttons.items():
+                if button:
+                    # Lambda 함수 클로저 문제 해결: 함수 팩토리 패턴 사용
+                    def create_mode_click_handler(mode):
+                        return lambda checked: self.set_selection_mode(mode)
+                    
+                    button.clicked.connect(create_mode_click_handler(mode_key))
+            
+            logger.info("강제 버튼 복구 완료")
+            
+        except Exception as e:
+            logger.error(f"강제 버튼 복구 오류: {str(e)}")

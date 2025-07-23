@@ -714,7 +714,7 @@ async def main():
         HOME_DIR = os.getcwd()
         
         # data_path = Path(__file__).parent.parent / args.data_path
-        data_path = Path(r"C:\Users\11kkh\Desktop\crawling") / args.data_path
+        data_path = Path(r"/Users/kkh/Desktop/musinsa-crawling") / args.data_path
         if not data_path.exists():
             logger.error(f"데이터 경로가 존재하지 않습니다: {data_path}")
             return 1
@@ -735,6 +735,9 @@ async def main():
         
         logger.info("AWS 연결 성공!")
         
+        # 업로드 전 서브 카테고리 모든 제품 삭제
+        # aws_manager.delete_all_products_in_category(1002)
+
         # 업로더 생성 및 실행
         uploader = InitialUploader(str(data_path), aws_manager)
         results = await uploader.upload_all_products_async()

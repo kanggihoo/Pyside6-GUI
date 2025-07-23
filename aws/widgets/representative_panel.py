@@ -810,6 +810,7 @@ class RepresentativePanel(QWidget):
         except Exception as e:
             logger.error(f"패널 초기화 오류: {str(e)}")
     
+    #CHECK : 중요 함수(큐레이션 완료 처리)
     def complete_curation(self):
         """큐레이션 완료 처리"""
         if not self.current_product:

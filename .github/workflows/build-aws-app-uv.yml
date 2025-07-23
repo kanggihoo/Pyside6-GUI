@@ -154,8 +154,8 @@ jobs:
           ## AWS Data Curator ${{ github.ref_name }}
           
           ### Changes
-          - segment 필드에서 text 필드로 이미지 이동시 s3 , dyanmodb 수정 (segment 필드에서는 삭제 , text 필드에는 추가)
-          - Cross-platform support (Windows & macOS)
+          - 새로운 GSI 도입해서 처음 선택한 main, sub 카테고리에 맞게 제품 보여지고 관련 이미지 다운로드 진행 및 큐레이션 완료시 dynamdb 반영
+          - 가끔 버튼이 눌러도 동작하지 않는 버그 수정 했는데 확인 필요 (ctrl+R 누르면 된다는데 다시 확인 필요)
           
           ### Downloads
           - Windows: AWS_Data_Curator_windows.zip
