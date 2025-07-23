@@ -1,0 +1,168 @@
+name: Build AWS Data Curator with UV
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install UV
+      uses: astral-sh/setup-uv@v6
+      with:
+        version: "latest"
+        enable-cache: true
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version-file: '.python-version'
+
+    - name: Install dependencies with UV
+      run: |
+        uv sync --frozen --dev
+
+    # - name: Cache UV dependencies
+    #   uses: actions/cache@v4
+    #   with:
+    #     path: |
+    #       .uv/cache
+    #       .uv/venv
+    #     key: ${{ runner.os }}-uv-${{ hashFiles('aws/requirements.txt') }}
+    #     restore-keys: |
+    #       ${{ runner.os }}-uv-
+    
+
+    - name: Build AWS app
+      run: |
+        uv run python build_aws.py
+    
+    # - name: List files after build
+    #   run: |
+    #     echo "Files after build:"
+    #     dir
+    #     echo "dist directory contents:"
+    #     if (Test-Path "dist") { 
+    #       dir dist 
+    #       echo "dist/AWS_Data_Curator.exe exists:"
+    #       if (Test-Path "dist/AWS_Data_Curator.exe") { echo "YES" } else { echo "NO" }
+    #       echo "dist/AWS_Data_Curator directory exists:"
+    #       if (Test-Path "dist/AWS_Data_Curator") { echo "YES" } else { echo "NO" }
+    #     } else { 
+    #       echo "dist directory not found" 
+    #     }
+    
+    - name: Create ZIP package
+      run: |
+        uv run python package_aws.py
+    
+    - name: Upload Windows artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: aws-app-windows
+        path: AWS_Data_Curator_windows_v*.zip
+        retention-days: 30
+
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install UV
+      uses: astral-sh/setup-uv@v6
+      with:
+        version: "latest"
+        enable-cache: true
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version-file: '.python-version'
+
+    - name: Install dependencies with UV
+      run: |
+        uv sync --frozen --dev
+
+  #   - name: Cache UV dependencies
+  #     uses: actions/cache@v4
+  #     with:
+  #       path: |
+  #         .uv/cache
+  #         .uv/venv
+  #       key: ${{ runner.os }}-uv-${{ hashFiles('aws/requirements.txt') }}
+  #       restore-keys: |
+  #         ${{ runner.os }}-uv-
+  
+    - name: Build AWS app
+      run: |
+        uv run python build_aws.py
+    
+    - name: Create ZIP package
+      run: |
+        uv run python package_aws.py
+    
+    - name: Upload macOS artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: aws-app-macos
+        path: AWS_Data_Curator_macos_v*.zip
+        retention-days: 30
+
+  # 릴리즈 배포 작업 (태그가 있을 때만 실행)
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write  # 릴리즈 생성 권한 추가
+    
+    steps:
+    - name: Download Windows artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: aws-app-windows
+        path: ./windows-artifacts
+    
+    - name: Download macOS artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: aws-app-macos
+        path: ./macos-artifacts
+    
+    - name: Create release assets
+      run: |
+        mkdir -p release-assets
+        cp ./windows-artifacts/*.zip ./release-assets/
+        cp ./macos-artifacts/*.zip ./release-assets/
+        echo "Release assets created:"
+        ls -la release-assets/
+    
+    - name: Create Release
+      id: create_release
+      uses: softprops/action-gh-release@v1  # 최신 액션 사용
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: AWS Data Curator ${{ github.ref_name }}
+        body: |
+          ## AWS Data Curator ${{ github.ref_name }}
+          
+          ### Changes
+          - 새로운 GSI 도입해서 처음 선택한 main, sub 카테고리에 맞게 제품 보여지고 관련 이미지 다운로드 진행 및 큐레이션 완료시 dynamdb 반영
+          - 가끔 버튼이 눌러도 동작하지 않는 버그 수정 했는데 확인 필요 (ctrl+R 누르면 된다는데 다시 확인 필요)
+          
+          ### Downloads
+          - Windows: AWS_Data_Curator_windows.zip
+          - macOS: AWS_Data_Curator_macos.zip
+        draft: false
+        prerelease: false
+        files: |
+          ./release-assets/AWS_Data_Curator_windows_v*.zip
+          ./release-assets/AWS_Data_Curator_macos_v*.zip
+    
